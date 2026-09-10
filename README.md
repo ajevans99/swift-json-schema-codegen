@@ -42,12 +42,15 @@ import JSONSchemaCodegen
 
 @Schema("""
 {
-  "type": "object",
-  "properties": {
-    "primaryColor": {
+  "$defs": {
+    "hexColor": {
       "type": "string",
       "pattern": "^#[0-9a-fA-F]{6}$"
-    },
+    }
+  },
+  "type": "object",
+  "properties": {
+    "primaryColor": { "$ref": "#/$defs/hexColor" },
     "iconUrl": { "type": "string" }
   },
   "required": ["primaryColor"],
@@ -109,11 +112,67 @@ Use `parseAndValidate`, not just `parse`, to enforce all schema constraints.
 the JSON Schema validator. `format` follows that validator's dialect and
 validation-context behavior rather than imposing new codegen-specific rules.
 
+## Reusable schemas and references
+
+`$defs` and `$ref` work in both inline macros and file-based generation. References
+are resolved at generation time, not at runtime; their outputs keep the same
+Swift types as the referenced definitions.
+
+For a theme, reusable definitions might describe hex colors, spacing scales, and
+typography. Several button variants can reference the same typography object
+without repeating its properties or numeric constraints. The
+[plugin example](Examples/PluginExample) contains authored theme/design-token and
+application-settings schemas, with valid and invalid JSON instances. These are
+practical examples, not a claim of conformance to the DTCG design-token standard.
+
+| Example | What it demonstrates |
+| --- | --- |
+| [Design tokens](Examples/PluginExample/Sources/PluginExample/Schemas/Common/design-tokens.schema.json) | Reusable hex colors, semantic palettes, typography, and spacing; nested resource IDs and anchors |
+| [Theme](Examples/PluginExample/Sources/PluginExample/Schemas/theme.schema.json) | A theme assembled from shared tokens, with body/heading typography and optional corner radius |
+| [App settings](Examples/PluginExample/Sources/PluginExample/Schemas/App/app-settings.schema.json) | Cross-document references for appearance, typography overrides, layout, and recent accent colors |
+| [JSON instances](Examples/PluginExample/Sources/PluginExample/Fixtures) | Valid payloads plus invalid colors, missing typography fields, excessive scores, and duplicate colors |
+
+The examples intentionally use canonical `$id` paths that differ from physical
+filenames. For example, a nested `typography-style.schema.json` resource lives
+inside the shared design-token document; it is not a separate file to download.
+
+Resolution supports:
+
+- Local JSON Pointers, including escaped `/` and `~` tokens and percent-encoded
+  fragments.
+- Document retrieval URIs and canonical `$id` aliases.
+- Nested `$id` resources, which establish new bases for relative references.
+- Static `$anchor` names, scoped to their containing resource.
+- Relative and absolute references to other explicitly supplied batch documents.
+
+The inline macro's registry contains only its literal. The CLI/plugin registry
+contains every schema in the batch. **No reference triggers a network request or
+an implicit filesystem read.** A referenced file must be included even if it
+already exists beside an input. Relative references use the closest enclosing
+`$id`, or the input file's retrieval URI when there is no `$id`.
+
+Annotations and non-structural constraint siblings next to `$ref` retain
+conjunction semantics. For example, a referenced `minLength: 3` is not weakened
+by a sibling `minLength: 1`. The emitter uses a typed builder component with an
+`allOf` validation schema instead of incorrectly merging keyword dictionaries.
+Structural siblings (`type`, `properties`, `items`, and `required`) are rejected
+for now because they require a separate output-shape composition policy.
+
+Only reachable definitions are emitted. Identifiers and anchors are removed
+from inlined copies to avoid registering the same resource repeatedly. Generated
+schemas are self-contained, but need not retain the input document's exact shape.
+
+Missing references, duplicate resource IDs/anchors, and cycles are diagnostics
+with the original source document and JSON Pointer. Recursive schemas cannot
+produce finite tuple outputs and are rejected. Expansion is bounded to 128
+levels and 10,000 emitted nodes per schema to prevent pathological reference
+graphs from producing unbounded Swift source.
+
 ## Command-line generation
 
 ```sh
 swift run json-schema-codegen --output-directory Generated \
-  Schemas/theme.schema.json
+  Schemas/theme.schema.json Schemas/shared.schema.json
 ```
 
 Generated Swift imports `JSONSchema` and `JSONSchemaBuilder`, and exposes a
@@ -121,6 +180,8 @@ namespace such as `ThemeSchema.schema`. Multiple schema inputs are processed in
 one invocation. Generation is deterministic and does not embed timestamps.
 Unchanged outputs are not rewritten, and schema errors fail the batch before
 any output is modified.
+All inputs share one reference registry, regardless of command-line order. A
+shared schema change therefore regenerates its dependent declarations.
 
 Filenames must end in `.schema.json`. Basenames start with an ASCII letter and
 contain letters, digits, and single `-` or `_` separators. For example,
@@ -169,7 +230,26 @@ print(generated.outputType) // String
 
 The core preserves property order using `OrderedJSON`, emits escaped Swift
 literals without evaluating schema text, and performs no file or network I/O.
-Failures are `SchemaGenerationError` values with `pointer` and `message` fields.
+Failures are `SchemaGenerationError` values with `pointer`, `message`, and an
+optional `documentURI` identifying the original source of a batch failure.
+
+For multi-document generation, provide retrieval URIs explicitly. Results are
+returned in the same order as the input documents:
+
+```swift
+import Foundation
+import JSONSchemaCodegenCore
+
+let folder = URL(fileURLWithPath: "/project/Schemas", isDirectory: true)
+let inputs = try ["theme.schema.json", "shared.schema.json"].map { name in
+  let url = folder.appendingPathComponent(name)
+  return SchemaDocument(
+    source: try String(contentsOf: url, encoding: .utf8),
+    retrievalURI: url
+  )
+}
+let generated = try SchemaGenerator().generate(inputs)
+```
 
 ## Supported subset
 
@@ -183,6 +263,7 @@ The initial implementation supports JSON Schema 2020-12:
 | Strings | `minLength`, `maxLength`, `pattern`, `format` |
 | Numbers | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` |
 | Values | `enum`, `const` |
+| References | `$defs`, non-recursive `$ref`, nested `$id`, static `$anchor`, offline cross-document resolution |
 | Annotations | `title`, `description`, `default`, `examples`, `readOnly`, `writeOnly`, `deprecated`, `$comment` |
 | Metadata | `$id`, `$schema` for the 2020-12 dialect |
 
@@ -191,11 +272,11 @@ properties must be declared in `properties`. Numeric representation follows
 `OrderedJSON` (`Int`/`Double`); arbitrary-precision JSON numbers are not provided.
 Defaults are annotations, not automatic value insertion.
 
-**Unknown or unsupported keywords are errors**, including `$defs`, `$ref`,
-composition, tuple arrays, schema-valued additional properties, and custom
-extension keywords. Documents are currently independent even in batch mode.
-Reference graphs, cross-document resolution, composition, and an OpenAPI 3.1
-adapter are follow-on work in [the original plan](schema-macro-plan.md).
+**Unsupported keywords in reachable schemas are errors**, including input
+composition (`allOf`, `anyOf`, `oneOf`), dynamic references, tuple arrays,
+schema-valued additional properties, and custom extension keywords.
+Output-shape composition and an OpenAPI 3.1 adapter remain follow-on work in
+[the original plan](schema-macro-plan.md).
 
 ## Development
 

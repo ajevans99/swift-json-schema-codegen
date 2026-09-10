@@ -20,7 +20,9 @@
 ///
 /// The enum must be empty and outside generic contexts. Public and package enums
 /// expose `schema` at the same access level. Interpolation, runtime strings, and
-/// unsupported schema keywords are errors.
+/// unsupported schema keywords are errors. Local `$defs`, `$ref`, `$id`, and
+/// `$anchor` references resolve within the literal. References to other files
+/// belong in the CLI or build plugin's explicit document batch.
 @attached(member, names: named(schema))
 public macro Schema(_ json: String) =
   #externalMacro(module: "JSONSchemaCodegenMacros", type: "SchemaMacro")

@@ -16,36 +16,93 @@ public struct GeneratedSchema: Equatable, Sendable {
 public struct SchemaGenerationError: Error, Equatable, Sendable, CustomStringConvertible {
   public let pointer: String
   public let message: String
+  public let documentURI: URL?
 
-  public init(pointer: String, message: String) {
+  public init(pointer: String, message: String, documentURI: URL? = nil) {
     self.pointer = pointer
     self.message = message
+    self.documentURI = documentURI
   }
 
-  public var description: String { "\(pointer.isEmpty ? "#" : "#\(pointer)"): \(message)" }
+  public var description: String {
+    let source = documentURI.map { ($0.isFileURL ? $0.path : $0.absoluteString) + ": " } ?? ""
+    return "\(source)#\(pointer): \(message)"
+  }
 }
 
 /// Lowers a supported JSON Schema 2020-12 document to JSONSchemaBuilder source.
 ///
-/// Generation performs no file or network I/O. Unsupported keywords are errors,
-/// including references and composition, rather than silently weakened schemas.
+/// Generation performs no file or network I/O. References resolve through the
+/// explicitly supplied document registry. Unsupported keywords are errors rather
+/// than silently weakened schemas.
 public struct SchemaGenerator: Sendable {
   public init() {}
 
   public func generate(_ source: String) throws -> GeneratedSchema {
-    let value: JSONValue
-    do {
-      value = try JSONValue.parse(source)
-    } catch let error as JSONParseError {
-      throw SchemaGenerationError(
-        pointer: "",
-        message: "Invalid JSON at line \(error.line), column \(error.column): \(error.message)"
-      )
-    }
-    return try plan(value, at: "")
+    let graph = try SchemaReferenceGraph(
+      documents: [SchemaDocument(source: source, retrievalURI: URL(fileURLWithPath: "/inline.schema.json"))],
+      includeDocumentURI: false
+    )
+    var emitter = SchemaEmitter()
+    return try emitter.plan(graph.root(at: 0))
   }
 
-  private func plan(_ value: JSONValue, at pointer: String) throws -> GeneratedSchema {
+  /// Generates a batch using a single registry, returning results in input order.
+  ///
+  /// Every input is registered before any reference is followed. Referenced files
+  /// must be included in this array; URLs are identifiers, not fetch instructions.
+  public func generate(_ documents: [SchemaDocument]) throws -> [GeneratedSchema] {
+    let graph = try SchemaReferenceGraph(documents: documents)
+    return try documents.indices.map {
+      var emitter = SchemaEmitter()
+      return try emitter.plan(graph.root(at: $0))
+    }
+  }
+}
+
+private struct SchemaEmitter {
+  private var visitedNodes = 0
+
+  mutating func plan(_ node: ResolvedSchema) throws -> GeneratedSchema {
+    do {
+      visitedNodes += 1
+      guard visitedNodes <= 10_000 else {
+        throw failure(node.location.pointer, "Schema expansion exceeds the maximum of 10000 emitted nodes.")
+      }
+      let generated = try emit(node)
+      guard !node.refinements.isEmpty else { return generated }
+      let siblings = try node.refinements.map { try plan($0) }
+      let constraints = siblings.map {
+        "(\n\(indent($0.expression))\n).schemaValue.value"
+      }.joined(separator: ",\n")
+      return GeneratedSchema(
+        expression: """
+          {
+            var schema = (
+          \(indent(indent(generated.expression)))
+            ).eraseToAnySchemaComponent()
+            schema.schemaValue = .object([
+              "allOf": [
+                schema.schemaValue.value,
+          \(indent(indent(indent(constraints))))
+              ]
+            ])
+            return schema
+          }()
+          """,
+        outputType: generated.outputType
+      )
+    } catch let error as SchemaGenerationError {
+      throw SchemaGenerationError(
+        pointer: error.pointer, message: error.message,
+        documentURI: error.documentURI ?? node.documentURI
+      )
+    }
+  }
+
+  private mutating func emit(_ node: ResolvedSchema) throws -> GeneratedSchema {
+    let value = node.value
+    let pointer = node.location.pointer
     if case .boolean(let flag) = value {
       return GeneratedSchema(
         expression: """
@@ -83,15 +140,18 @@ public struct SchemaGenerator: Sendable {
       expression = "JSONNull()"
       outputType = "Void"
     case "object":
-      let generated = try objectPlan(value, at: pointer)
+      let generated = try objectPlan(node)
       expression = generated.expression
       outputType = generated.outputType
     case "array":
-      let items = try plan(object["items"] ?? .object([:]), at: child(pointer, "items"))
+      let itemNode = node.children["items"] ?? ResolvedSchema(
+        value: .object([:]), location: node.location.child("items"), documentURI: node.documentURI
+      )
+      let items = try plan(itemNode)
       expression = "JSONArray {\n\(indent(items.expression))\n}"
       outputType = "[\(items.outputType)]"
       // The upstream array initializer only copies object-shaped item schemas.
-      if case .boolean(let flag) = object["items"] {
+      if case .boolean(let flag) = itemNode.value, itemNode.refinements.isEmpty {
         expression = """
           {
             var schema = \(expression)
@@ -148,12 +208,12 @@ public struct SchemaGenerator: Sendable {
       let location = child(pointer, key)
       guard let keyword = object[key] else { continue }
       switch key {
-      case "title", "description", "$comment", "$id", "$schema":
+      case "title", "description", "$comment", "$id", "$schema", "$anchor":
         let text = try string(keyword, at: location)
         if key == "$schema", text != "https://json-schema.org/draft/2020-12/schema" {
           throw failure(location, "Only the JSON Schema 2020-12 dialect is supported.")
         }
-        let method = ["$comment": "comment", "$id": "id", "$schema": "schema"][key] ?? key
+        let method = ["$comment": "comment", "$id": "id", "$schema": "schema", "$anchor": "anchor"][key] ?? key
         expression += "\n.\(method)(\(swiftString(text)))"
       case "readOnly", "writeOnly", "deprecated":
         expression += "\n.\(key)(\(try boolean(keyword, at: location)))"
@@ -192,8 +252,9 @@ public struct SchemaGenerator: Sendable {
     return GeneratedSchema(expression: expression, outputType: outputType)
   }
 
-  private func objectPlan(_ value: JSONValue, at pointer: String) throws -> GeneratedSchema {
-    guard let object = value.object else {
+  private mutating func objectPlan(_ node: ResolvedSchema) throws -> GeneratedSchema {
+    let pointer = node.location.pointer
+    guard let object = node.value.object else {
       throw failure(pointer, "Expected an object schema.")
     }
     let propertiesValue = object["properties"] ?? .object([:])
@@ -218,7 +279,7 @@ public struct SchemaGenerator: Sendable {
     }
     var expressions: [String] = []
     var fields: [(name: String, type: String)] = []
-    for (name, property) in properties {
+    for name in properties.keys {
       let location = child(child(pointer, "properties"), name)
       guard isIdentifier(name) else {
         throw failure(
@@ -226,7 +287,10 @@ public struct SchemaGenerator: Sendable {
           "Property name '\(name)' cannot be represented as a Swift tuple label; use an ASCII identifier."
         )
       }
-      let generated = try plan(property, at: location)
+      guard let property = node.children["properties/" + name] else {
+        throw failure(location, "Missing resolved property schema.")
+      }
+      let generated = try plan(property)
       let isRequired = required.contains(name)
       expressions.append("""
         JSONProperty(key: \(swiftString(name))) {
@@ -386,7 +450,7 @@ public struct SchemaGenerator: Sendable {
     "multipleOf": ["number", "integer"],
   ]
   private static let supportedKeywords = Set(keywordTypes.keys).union([
-    "type", "enum", "const", "title", "description", "$comment", "$id", "$schema",
+    "type", "enum", "const", "title", "description", "$comment", "$id", "$schema", "$anchor",
     "default", "examples", "readOnly", "writeOnly", "deprecated",
   ])
 }

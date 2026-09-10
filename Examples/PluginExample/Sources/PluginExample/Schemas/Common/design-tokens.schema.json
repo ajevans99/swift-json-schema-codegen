@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/common/design-tokens.schema.json",
+  "title": "Reusable design tokens",
+  "description": "Shared color, typography, and spacing tokens for the example app.",
+  "$defs": {
+    "hexColor": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$",
+      "description": "A six-digit RGB hex color."
+    },
+    "colorRole": {
+      "$id": "color-role.schema.json",
+      "type": "object",
+      "title": "Color role",
+      "properties": {
+        "base": {
+          "$ref": "design-tokens.schema.json#/$defs/hexColor",
+          "description": "Primary role color."
+        },
+        "muted": {
+          "$ref": "design-tokens.schema.json#/$defs/hexColor",
+          "description": "Subtle role color."
+        }
+      },
+      "required": ["base", "muted"],
+      "additionalProperties": false
+    },
+    "themePalette": {
+      "$id": "theme-palette.schema.json",
+      "$anchor": "themePalette",
+      "type": "object",
+      "title": "Theme palette",
+      "properties": {
+        "background": { "$ref": "color-role.schema.json" },
+        "foreground": { "$ref": "color-role.schema.json" },
+        "accent": {
+          "$ref": "design-tokens.schema.json#/$defs/hexColor",
+          "description": "Highlight color."
+        }
+      },
+      "required": ["background", "foreground", "accent"],
+      "additionalProperties": false
+    },
+    "typographyStyle": {
+      "$id": "typography-style.schema.json",
+      "$anchor": "typographyStyle",
+      "type": "object",
+      "title": "Typography style",
+      "properties": {
+        "fontFamily": { "type": "string", "minLength": 1 },
+        "fontSize": { "type": "number", "minimum": 10, "maximum": 48, "multipleOf": 0.5 },
+        "fontWeight": { "type": "integer", "enum": [400, 500, 600, 700] },
+        "lineHeight": { "type": "number", "minimum": 1, "maximum": 2 }
+      },
+      "required": ["fontFamily", "fontSize", "fontWeight", "lineHeight"],
+      "additionalProperties": false
+    },
+    "spacingScale": {
+      "$anchor": "spacingScale",
+      "type": "object",
+      "title": "Spacing scale",
+      "properties": {
+        "unit": { "type": "integer", "minimum": 4, "maximum": 16, "multipleOf": 4 },
+        "steps": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0, "maximum": 12 },
+          "minItems": 4,
+          "maxItems": 6,
+          "uniqueItems": true
+        }
+      },
+      "required": ["unit", "steps"],
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "properties": {
+    "body": { "$ref": "typography-style.schema.json" },
+    "spacing": { "$ref": "#spacingScale" }
+  },
+  "required": ["body", "spacing"],
+  "additionalProperties": false
+}

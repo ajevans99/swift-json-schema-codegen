@@ -1,0 +1,33 @@
+{
+  "name": "Midnight",
+  "dark": true,
+  "mode": "dark",
+  "colors": {
+    "background": {
+      "base": "#101828",
+      "muted": "#1D2939"
+    },
+    "foreground": {
+      "base": "#F8FAFC",
+      "muted": "#98A2B3"
+    },
+    "accent": "#7C3AED"
+  },
+  "typography": {
+    "body": {
+      "fontFamily": "Inter",
+      "fontSize": 16,
+      "fontWeight": 400
+    },
+    "heading": {
+      "fontFamily": "Inter Tight",
+      "fontSize": 24,
+      "fontWeight": 600,
+      "lineHeight": 1.2
+    }
+  },
+  "spacing": {
+    "unit": 4,
+    "steps": [0, 1, 2, 4]
+  }
+}

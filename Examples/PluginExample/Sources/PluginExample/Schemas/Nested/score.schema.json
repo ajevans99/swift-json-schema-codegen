@@ -1,5 +1,10 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/Nested/score.schema.json",
+  "title": "Badge score threshold",
+  "description": "The highest onboarding score shown in the settings screen.",
   "type": "integer",
   "minimum": 0,
-  "maximum": 100
+  "maximum": 100,
+  "default": 42
 }

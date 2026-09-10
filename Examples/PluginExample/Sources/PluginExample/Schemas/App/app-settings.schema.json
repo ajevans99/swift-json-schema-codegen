@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/app/app-settings.schema.json",
+  "title": "App settings",
+  "description": "Persisted settings that reuse shared theme and token definitions.",
+  "type": "object",
+  "properties": {
+    "themeName": {
+      "$ref": "../theme.schema.json#/$defs/themeName",
+      "description": "Selected theme name."
+    },
+    "preferredMode": {
+      "$ref": "../theme.schema.json#themeMode",
+      "description": "Requested appearance mode."
+    },
+    "notifications": {
+      "type": "object",
+      "properties": {
+        "marketing": {
+          "type": "boolean",
+          "description": "Marketing opt-in."
+        },
+        "mentionsOnly": {
+          "type": "boolean",
+          "description": "Alert only for direct mentions."
+        }
+      },
+      "required": ["marketing", "mentionsOnly"],
+      "additionalProperties": false
+    },
+    "bodyStyle": {
+      "$ref": "../common/typography-style.schema.json#typographyStyle",
+      "description": "User typography override."
+    },
+    "spacing": {
+      "$ref": "../common/design-tokens.schema.json#spacingScale",
+      "description": "Spacing preset."
+    },
+    "scoreLimit": {
+      "$ref": "../Nested/score.schema.json",
+      "description": "Highest badge score to display."
+    },
+    "recentAccentColors": {
+      "type": "array",
+      "items": { "$ref": "../common/design-tokens.schema.json#/$defs/hexColor" },
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "description": "Recently used accent colors."
+    },
+    "layout": {
+      "type": "object",
+      "properties": {
+        "compact": { "type": "boolean" },
+        "gutter": { "type": "integer", "minimum": 0, "maximum": 64 }
+      },
+      "required": ["compact", "gutter"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "themeName",
+    "preferredMode",
+    "notifications",
+    "bodyStyle",
+    "spacing",
+    "scoreLimit",
+    "recentAccentColors",
+    "layout"
+  ],
+  "additionalProperties": false
+}

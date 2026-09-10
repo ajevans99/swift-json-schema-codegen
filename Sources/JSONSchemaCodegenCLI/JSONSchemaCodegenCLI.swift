@@ -38,16 +38,18 @@ struct JSONSchemaCodegenCLI {
     }
 
     // Plan the complete batch before creating the directory or changing any generated files.
-    let outputs: [(url: URL, data: Data)] = try plans.map { plan in
-      let generated: GeneratedSchema
+    let documents: [SchemaDocument] = try plans.map { plan in
       do {
         let source = try String(contentsOf: plan.input, encoding: .utf8)
-        generated = try SchemaGenerator().generate(source)
-      } catch let error as SchemaGenerationError {
-        throw CLIError(message: "\(plan.input.path): \(error)")
+        return SchemaDocument(source: source, retrievalURI: plan.input)
       } catch {
         throw CLIError(message: "\(plan.input.path): #: \(error)")
       }
+    }
+
+    let generatedSchemas = try SchemaGenerator().generate(documents)
+
+    let outputs: [(url: URL, data: Data)] = zip(plans, generatedSchemas).map { plan, generated in
       let expression = generated.expression
         .split(separator: "\n", omittingEmptySubsequences: false)
         .map { "    \($0)" }

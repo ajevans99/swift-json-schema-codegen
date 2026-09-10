@@ -112,6 +112,28 @@ final class SchemaMacroTests: XCTestCase {
     assertExpansion(#"@Schema("{}")"#, expression: "JSONAnyValue()", output: "JSONValue")
   }
 
+  func testLocalReferenceExpansion() {
+    assertExpansion(
+      ###"@Schema(##"{"$defs":{"count":{"type":"integer"}},"$ref":"#/$defs/count"}"##)"###,
+      expression: "JSONInteger()",
+      output: "Int"
+    )
+  }
+
+  func testReferencedDefinitionDiagnostic() {
+    assertDiagnostic(
+      ###"@Schema(##"{"$defs":{"color":{"type":"string","minLength":-1}},"$ref":"#/$defs/color"}"##)"###,
+      message: "#/$defs/color/minLength: Expected a nonnegative integer representable by Swift.Int."
+    )
+  }
+
+  func testRecursiveReferenceDiagnostic() {
+    assertDiagnostic(
+      ###"@Schema(##"{"$ref":"#"}"##)"###,
+      message: "#/$ref: Recursive reference cannot be represented by a finite Swift tuple: # -> #."
+    )
+  }
+
   func testPublicAccess() {
     assertExpansion(
       ##"@Schema(#"{"type":"string"}"#)"##,

@@ -1,9 +1,68 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/theme.schema.json",
+  "title": "App theme",
+  "description": "A reusable theme payload assembled from shared design tokens.",
+  "$defs": {
+    "themeName": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Theme name shown in pickers."
+    },
+    "themeMode": {
+      "$anchor": "themeMode",
+      "type": "string",
+      "enum": ["light", "dark"],
+      "description": "Semantic appearance mode."
+    }
+  },
   "type": "object",
   "properties": {
-    "name": { "type": "string", "minLength": 1 },
-    "dark": { "type": "boolean" }
+    "name": {
+      "$ref": "#/$defs/themeName",
+      "description": "Human-readable theme name."
+    },
+    "dark": {
+      "type": "boolean",
+      "description": "Legacy convenience flag kept for existing callers."
+    },
+    "mode": {
+      "$ref": "#themeMode",
+      "description": "Appearance mode derived from a local anchor."
+    },
+    "colors": {
+      "$ref": "common/theme-palette.schema.json",
+      "title": "Semantic color palette"
+    },
+    "typography": {
+      "type": "object",
+      "description": "Named text roles that reuse shared typography schemas.",
+      "properties": {
+        "body": {
+          "$ref": "common/typography-style.schema.json#typographyStyle",
+          "description": "Default body copy style."
+        },
+        "heading": {
+          "$ref": "common/typography-style.schema.json",
+          "description": "Heading style."
+        }
+      },
+      "required": ["body", "heading"],
+      "additionalProperties": false
+    },
+    "spacing": {
+      "$ref": "common/design-tokens.schema.json#spacingScale",
+      "description": "Baseline spacing scale."
+    },
+    "radius": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 24,
+      "multipleOf": 0.5,
+      "description": "Corner radius token.",
+      "default": 12
+    }
   },
-  "required": ["name", "dark"],
+  "required": ["name", "dark", "mode", "colors", "typography", "spacing"],
   "additionalProperties": false
 }

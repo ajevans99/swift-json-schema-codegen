@@ -70,7 +70,12 @@ The plugin should process all schema inputs together rather than invoke codegen 
 
 ## Follow-On Work
 
-1. Add local `$defs` and `$ref` graph resolution.
-2. Add cross-document references through the CLI and build plugin.
-3. Support composition where a faithful tuple or value representation exists.
-4. Build an OpenAPI 3.1 adapter that extracts Schema Objects into the same planning pipeline.
+Local `$defs`/`$ref` graph resolution and offline cross-document references are
+implemented in the shared core, CLI, and build plugin. This includes nested `$id`
+resources, static anchors, original-source diagnostics, and cycle detection.
+Reference siblings with non-structural constraints preserve intersection
+semantics; recursive schemas and structural siblings remain explicit errors.
+
+1. Support composition where a faithful tuple or value representation exists.
+2. Decide on nominal output types before supporting recursive schemas.
+3. Build an OpenAPI 3.1 adapter that extracts Schema Objects into the same planning pipeline.

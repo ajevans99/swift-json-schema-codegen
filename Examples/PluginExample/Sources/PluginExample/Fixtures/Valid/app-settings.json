@@ -1,0 +1,24 @@
+{
+  "themeName": "Midnight",
+  "preferredMode": "dark",
+  "notifications": {
+    "marketing": false,
+    "mentionsOnly": true
+  },
+  "bodyStyle": {
+    "fontFamily": "Inter",
+    "fontSize": 16,
+    "fontWeight": 400,
+    "lineHeight": 1.5
+  },
+  "spacing": {
+    "unit": 4,
+    "steps": [0, 1, 2, 4]
+  },
+  "scoreLimit": 42,
+  "recentAccentColors": ["#7C3AED", "#06B6D4"],
+  "layout": {
+    "compact": false,
+    "gutter": 24
+  }
+}
