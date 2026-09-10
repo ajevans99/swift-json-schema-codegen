@@ -1,0 +1,1 @@
+../../Sources/JSONSchemaCodegenCLI/SchemaFileNaming.swift
