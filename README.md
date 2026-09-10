@@ -18,13 +18,13 @@ builder's variadic property tuples. The CLI and generation core also support Lin
 
 ## Installation
 
-Until the first release is tagged, depend on the main branch:
+Add the package dependency:
 
 ```swift
 dependencies: [
   .package(
     url: "https://github.com/ajevans99/swift-json-schema-codegen.git",
-    branch: "main"
+    from: "0.1.0"
   )
 ]
 ```
