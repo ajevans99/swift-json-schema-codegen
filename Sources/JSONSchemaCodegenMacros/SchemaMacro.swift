@@ -95,7 +95,7 @@ public struct SchemaMacro: MemberMacro {
         $0.name.tokenKind == .keyword(.public) || $0.name.tokenKind == .keyword(.package)
       }.map { "\($0.name.text) " } ?? ""
       let body = generated.expression.split(separator: "\n", omittingEmptySubsequences: false)
-        .map { "    \($0)" }.joined(separator: "\n")
+        .map { $0.isEmpty ? "" : "    \($0)" }.joined(separator: "\n")
       return generated.declarations.map { DeclSyntax(stringLiteral: $0) } + [
         DeclSyntax(stringLiteral: """
           \(access)static var schema: some JSONSchemaComponent<\(generated.outputType)> {

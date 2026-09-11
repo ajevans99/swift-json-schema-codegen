@@ -95,6 +95,9 @@ private struct SchemaEmitter {
         throw failure(
           node.location.pointer, "Schema expansion exceeds the maximum of 10000 emitted nodes.")
       }
+      if let simplified = inliningModifierRefinements(node) {
+        return try plan(simplified)
+      }
       if !node.refinements.isEmpty || node.value.object?["allOf"] != nil {
         return try applyingValidation(
           plan(intersection(conjuncts(node), at: node)), from: node
@@ -141,7 +144,7 @@ private struct SchemaEmitter {
       includesValidationHelper = true
       declarations.append(
         """
-        private static func _schemaValidated<Component: JSONSchemaComponent>(
+        private static func _schemaWithDefinition<Component: JSONSchemaComponent>(
           _ component: Component, _ value: SchemaValue
         ) -> JSONComponents.AnySchemaComponent<Component.Output> {
           var schema = component.eraseToAnySchemaComponent()
@@ -152,7 +155,7 @@ private struct SchemaEmitter {
     }
     return GeneratedSchema(
       expression: """
-        Self._schemaValidated(
+        Self._schemaWithDefinition(
         \(indent(generated.expression)),
         \(indent(schema))
         )
@@ -214,20 +217,49 @@ private struct SchemaEmitter {
       }
     }
     let name = keyword == "oneOf" ? "OneOf" : "AnyOf"
-    let erasedBranches = body.map {
-      "(\n\(indent($0))\n).eraseToAnySchemaComponent()"
-    }.joined(separator: ",\n")
+    let branchBody: String
+    // Explicit arrays disambiguate JSONValue builder overloads and adjacent IIFEs.
+    if outputType == "JSONValue" || body.contains(where: { $0.hasPrefix("{") }) {
+      let erasedBranches = body.map {
+        "(\n\(indent($0))\n).eraseToAnySchemaComponent()"
+      }.joined(separator: ",\n")
+      branchBody = "[\n\(indent(erasedBranches))\n]"
+    } else {
+      branchBody = body.joined(separator: "\n\n")
+    }
     let generated = GeneratedSchema(
       expression: """
         JSONComposition.\(name)(into: \(outputType).self) {
-          [
-        \(indent(indent(erasedBranches)))
-          ]
+        \(indent(branchBody))
         }
         """,
       outputType: outputType
     )
+    if let keys = sibling.value.object?.keys,
+      keys.allSatisfy(Self.commonModifierKeywords.contains)
+    {
+      return GeneratedSchema(
+        expression: try applyingCommonModifiers(to: generated.expression, from: sibling),
+        outputType: outputType
+      )
+    }
     return try applyingValidation(generated, from: node)
+  }
+
+  private func inliningModifierRefinements(_ node: ResolvedSchema) -> ResolvedSchema? {
+    guard !node.refinements.isEmpty, var object = node.value.object else { return nil }
+    for refinement in node.refinements {
+      guard refinement.refinements.isEmpty, let modifiers = refinement.value.object,
+        modifiers.keys.allSatisfy(Self.commonModifierKeywords.contains),
+        modifiers.keys.allSatisfy({ object[$0] == nil })
+      else { return nil }
+      // Repeated keywords must remain separate conjunctions, not overwrite each other.
+      for (key, value) in modifiers { object[key] = value }
+    }
+    var result = node
+    result.value = .object(object)
+    result.refinements = []
+    return result
   }
 
   private func conjuncts(_ node: ResolvedSchema) -> [ResolvedSchema] {
@@ -522,7 +554,7 @@ private struct SchemaEmitter {
       // The upstream array initializer only copies object-shaped item schemas.
       if case .boolean(let flag) = itemNode.value, itemNode.refinements.isEmpty {
         expression = """
-          {
+          { () -> JSONArray<JSONComponents.PassthroughComponent<JSONBooleanSchema>> in
             var schema = \(expression)
             schema.schemaValue["items"] = .boolean(\(flag))
             return schema
@@ -575,9 +607,21 @@ private struct SchemaEmitter {
       }
     }
 
-    for key in object.keys {
-      let location = child(pointer, key)
-      guard let keyword = object[key] else { continue }
+    expression = try applyingCommonModifiers(to: expression, from: node)
+    if nullable {
+      expression += "\n.orNull(style: .type)"
+      outputType += "?"
+    }
+    return GeneratedSchema(expression: expression, outputType: outputType)
+  }
+
+  private func applyingCommonModifiers(to source: String, from node: ResolvedSchema) throws -> String {
+    guard let object = node.value.object else {
+      throw failure(node.location.pointer, "Expected an object schema for modifiers.")
+    }
+    var expression = source
+    for (key, keyword) in object {
+      let location = node.location.child(key).pointer
       switch key {
       case "title", "description", "$comment", "$id", "$schema", "$anchor":
         let text = try string(keyword, at: location)
@@ -601,9 +645,8 @@ private struct SchemaEmitter {
         break
       }
     }
-
     if let keyword = object["enum"] {
-      let location = child(pointer, "enum")
+      let location = node.location.child("enum").pointer
       guard let values = keyword.array, !values.isEmpty else {
         throw failure(location, "'enum' must be a nonempty array.")
       }
@@ -617,11 +660,7 @@ private struct SchemaEmitter {
         )
         """
     }
-    if nullable {
-      expression += "\n.orNull(style: .type)"
-      outputType += "?"
-    }
-    return GeneratedSchema(expression: expression, outputType: outputType)
+    return expression
   }
 
   private mutating func objectPlan(_ node: ResolvedSchema) throws -> GeneratedSchema {
@@ -793,7 +832,7 @@ private struct SchemaEmitter {
 
   private func indent(_ source: String) -> String {
     source.split(separator: "\n", omittingEmptySubsequences: false)
-      .map { "  " + $0 }.joined(separator: "\n")
+      .map { $0.isEmpty ? "" : "  " + $0 }.joined(separator: "\n")
   }
 
   private func failure(_ pointer: String, _ message: String) -> SchemaGenerationError {
@@ -815,6 +854,10 @@ private struct SchemaEmitter {
   private static let numericKeywords: Set<String> = [
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
   ]
+  private static let commonModifierKeywords: Set<String> = [
+    "title", "description", "$comment", "$id", "$schema", "$anchor",
+    "default", "examples", "readOnly", "writeOnly", "deprecated", "enum", "const",
+  ]
   private static let keywordTypes: [String: Set<String>] = [
     "properties": ["object"], "required": ["object"], "additionalProperties": ["object"],
     "minProperties": ["object"], "maxProperties": ["object"],
@@ -824,9 +867,7 @@ private struct SchemaEmitter {
     "exclusiveMinimum": ["number", "integer"], "exclusiveMaximum": ["number", "integer"],
     "multipleOf": ["number", "integer"],
   ]
-  private static let supportedKeywords = Set(keywordTypes.keys).union([
-    "type", "enum", "const", "title", "description", "$comment", "$id", "$schema", "$anchor",
-    "default", "examples", "readOnly", "writeOnly", "deprecated",
-    "allOf", "anyOf", "oneOf", "not",
-  ])
+  private static let supportedKeywords = Set(keywordTypes.keys)
+    .union(commonModifierKeywords)
+    .union(["type", "allOf", "anyOf", "oneOf", "not"])
 }

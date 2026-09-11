@@ -170,4 +170,71 @@ struct CompositionIntegrationTests {
     guard case .option2(let text) = result else { Issue.record("Expected string branch"); return }
     expectNoDifference(text, "hello")
   }
+
+  @Test func annotatedUnionRetainsItsSchemaAndConstraintsWithoutReplacement() throws {
+    @Schema(#"""
+      {
+        "title":"Font family","description":"A supported font",
+        "anyOf":[
+          {"type":"string","pattern":"^(Inter|Roboto|Source Sans)$"},
+          {"type":"string","pattern":"^(serif|sans-serif|monospace)$"}
+        ],
+        "default":"Inter","examples":["Inter","serif"],
+        "readOnly":true,"writeOnly":false,"deprecated":false,"$comment":"Typography"
+      }
+      """#)
+    enum FontSchema {}
+    expectNoDifference(FontSchema.schema.schemaValue, .object([
+      "title": .string("Font family"),
+      "description": .string("A supported font"),
+      "anyOf": .array([
+        .object(["type": .string("string"), "pattern": .string("^(Inter|Roboto|Source Sans)$")]),
+        .object(["type": .string("string"), "pattern": .string("^(serif|sans-serif|monospace)$")]),
+      ]),
+      "default": .string("Inter"),
+      "examples": .array([.string("Inter"), .string("serif")]),
+      "readOnly": .boolean(true), "writeOnly": .boolean(false), "deprecated": .boolean(false),
+      "$comment": .string("Typography"),
+    ]))
+    expectNoDifference(try FontSchema.schema.parseAndValidate(instance: #""Inter""#), "Inter")
+    expectNoDifference(try FontSchema.schema.parseAndValidate(instance: #""serif""#), "serif")
+    #expect(throws: (any Error).self) {
+      try FontSchema.schema.parseAndValidate(instance: #""Comic Sans""#)
+    }
+  }
+
+  @Test func unionValueConstraintsRemainEffective() throws {
+    @Schema(#"""
+      {"oneOf":[{"type":"string"},{"type":"integer"}],"enum":["ready",42],"const":"ready"}
+      """#)
+    enum SelectedSchema {}
+    let result = try SelectedSchema.schema.parseAndValidate(instance: #""ready""#)
+    guard case .option1(let value) = result else { Issue.record("Expected string case"); return }
+    expectNoDifference(value, "ready")
+    for invalid in ["42", #""other""#, "43"] {
+      #expect(throws: (any Error).self) {
+        try SelectedSchema.schema.parseAndValidate(instance: invalid)
+      }
+    }
+  }
+
+  @Test func structuralUnionSiblingsStillRestrictValidation() throws {
+    @Schema(#"""
+      {"anyOf":[{"type":"string"},{"type":"integer"}],"type":"string","minLength":3}
+      """#)
+    enum RestrictedSchema {}
+    _ = try RestrictedSchema.schema.parseAndValidate(instance: #""ready""#)
+    for invalid in ["42", #""hi""#] {
+      #expect(throws: (any Error).self) {
+        try RestrictedSchema.schema.parseAndValidate(instance: invalid)
+      }
+    }
+  }
+
+  @Test func adjacentBooleanItemArraysRemainValidBuilderExpressions() throws {
+    @Schema(#"{"anyOf":[{"type":"array","items":false},{"type":"array","items":true}]}"#)
+    enum ArraysSchema {}
+    expectNoDifference(try ArraysSchema.schema.parseAndValidate(instance: "[]"), [JSONValue]())
+    expectNoDifference(try ArraysSchema.schema.parseAndValidate(instance: "[1]"), [.integer(1)])
+  }
 }

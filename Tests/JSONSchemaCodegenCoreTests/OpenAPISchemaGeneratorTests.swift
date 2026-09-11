@@ -203,6 +203,18 @@ struct OpenAPISchemaGeneratorTests {
     #expect(response.declarations.contains { $0.contains("case option2(") })
     let font = try #require(components.first { $0.name == "FontFamily" }?.schema)
     expectNoDifference(font.outputType, "String")
+    expectNoDifference(font.declarations, [])
+    #expect(!font.expression.contains("eraseToAnySchemaComponent"))
+    #expect(font.expression.hasSuffix(
+      #".description("A supported web font or a CSS generic family.")"#
+    ))
+
+    let typography = try #require(components.first { $0.name == "Typography" }?.schema)
+    expectNoDifference(typography.declarations, [])
+    #expect(!typography.expression.contains("_schema"))
+    #expect(!typography.expression.contains(".object("))
+    #expect(!typography.expression.contains("eraseToAnySchemaComponent"))
+    #expect(theme.declarations.contains { $0.contains("_schemaWithDefinition") })
   }
 
   private func generate(_ source: String) throws -> [GeneratedOpenAPISchema] {

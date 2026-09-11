@@ -108,9 +108,10 @@ struct ReferenceResolutionTests {
       """#
     let generated = try generator.generate(source)
     expectNoDifference(generated.outputType, "String")
-    #expect(generated.expression.contains(#""minLength": .integer(7)"#))
+    #expect(generated.expression.contains(".minLength(7)"))
     #expect(!generated.expression.contains(#".id("nested/palette.json")"#))
-    #expect(generated.expression.contains(#""$id": .string("https://styles.example/schemas/root.json")"#))
+    #expect(generated.expression.contains(#".id("https://styles.example/schemas/root.json")"#))
+    expectNoDifference(generated.declarations, [])
   }
 
   @Test func pointersEnteringNestedResourcesUseTheirBaseURI() throws {
