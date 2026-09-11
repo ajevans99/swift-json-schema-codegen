@@ -237,6 +237,16 @@ contain letters, digits, and single `-` or `_` separators. For example,
 `user-score.schema.json` generates `UserScoreSchema.generated.swift`. Names that
 collide, including case-insensitive collisions, are rejected.
 
+Run `swift run json-schema-codegen --help` (or `-h`) for usage. The CLI uses
+Apple's [Swift Argument Parser](https://github.com/apple/swift-argument-parser)
+for help and diagnostics. `--output-directory` and at least one input are required.
+Options may appear between input paths; use `--` to treat all remaining arguments
+as literal input paths (including paths beginning with `-`). Filename rules still
+apply. Quote paths containing spaces, and use `--output-directory=-generated` for a
+directory beginning with `-`. The `--output-directory=Generated` form is also
+accepted. Repeating `--output-directory` uses the last value, rather than the
+previous duplicate-option error.
+
 ## Build-tool plugin
 
 Attach the plugin to a target that links the library:
