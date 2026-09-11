@@ -4,6 +4,30 @@ This standalone Swift 6.1 package reads the authored [Style API document](Fixtur
 with `OpenAPISchemaGenerator` and emits JSONSchemaBuilder declarations. It does not
 use a macro or build-tool plugin to generate the components.
 
+## Run from VS Code
+
+Open the repository folder, then choose **Tasks: Run Task** from the Command
+Palette:
+
+- **Examples: Generate OpenAPI Swift** saves the generated code to
+  `.build/openapi-preview/StyleAPI.generated.swift`. Open that path with Quick
+  Open (`Cmd+P` on macOS or `Ctrl+P` on Windows/Linux).
+- **Examples: Run OpenAPI integration** compiles the generated code and runs the
+  payload checks.
+- **Examples: Run build-plugin example** runs the separate SwiftPM plugin example.
+
+Edit [Fixtures/style-api.openapi.json](Fixtures/style-api.openapi.json) and rerun
+the generation task to see how a schema change affects the Swift output. The
+preview file stays on disk and is ignored by Git.
+
+## Run from the terminal
+
+Save generated Swift to the same preview file:
+
+```sh
+bash Examples/OpenAPIExample/generate.sh
+```
+
 From the repository root, generate Swift on stdout:
 
 ```sh
