@@ -1,5 +1,7 @@
 import Foundation
 import OrderedJSON
+import SwiftSyntax
+import SwiftSyntaxBuilder
 
 /// A source expression and the Swift value type it parses.
 public struct GeneratedSchema: Equatable, Sendable {
@@ -42,6 +44,10 @@ public struct SchemaGenerator: Sendable {
   public init() {}
 
   public func generate(_ source: String) throws -> GeneratedSchema {
+    try generateSyntax(source).serialized()
+  }
+
+  package func generateSyntax(_ source: String) throws -> GeneratedSchemaSyntax {
     let graph = try SchemaReferenceGraph(
       documents: [
         SchemaDocument(source: source, retrievalURI: URL(fileURLWithPath: "/inline.schema.json"))
@@ -60,7 +66,7 @@ public struct SchemaGenerator: Sendable {
     let graph = try SchemaReferenceGraph(documents: documents)
     return try documents.indices.map {
       var emitter = SchemaEmitter()
-      return try emitter.generate(graph.root(at: $0))
+      return try emitter.generate(graph.root(at: $0)).serialized()
     }
   }
 
@@ -68,32 +74,33 @@ public struct SchemaGenerator: Sendable {
     let graph = try SchemaReferenceGraph(documents: [document], schemaPointers: schemaPointers)
     return try schemaPointers.map {
       var emitter = SchemaEmitter()
-      return try emitter.generate(graph.schema(at: $0))
+      return try emitter.generate(graph.schema(at: $0)).serialized()
     }
   }
 }
 
 private struct SchemaEmitter {
   private var visitedNodes = 0
-  private var declarations: [String] = []
+  private var declarations: [DeclSyntax] = []
   private var nextUnion = 0
-  private var unionNames: [String: String] = [:]
+  private var unionNames: [[SchemaOutput]: String] = [:]
   private var includesValidationHelper = false
 
-  mutating func generate(_ node: ResolvedSchema) throws -> GeneratedSchema {
+  mutating func generate(_ node: ResolvedSchema) throws -> GeneratedSchemaSyntax {
     try checkSchema(node)
     let result = try plan(node)
-    return GeneratedSchema(
-      expression: result.expression, outputType: result.outputType, declarations: declarations
-    )
+    return try SchemaSyntax.finish(result, declarations: declarations, at: node)
   }
 
-  mutating func plan(_ node: ResolvedSchema) throws -> GeneratedSchema {
+  mutating func plan(_ node: ResolvedSchema) throws -> SchemaFragment {
     do {
       visitedNodes += 1
       guard visitedNodes <= 10_000 else {
         throw failure(
           node.location.pointer, "Schema expansion exceeds the maximum of 10000 emitted nodes.")
+      }
+      if let simplified = inliningModifierRefinements(node) {
+        return try plan(simplified)
       }
       if !node.refinements.isEmpty || node.value.object?["allOf"] != nil {
         return try applyingValidation(
@@ -134,38 +141,29 @@ private struct SchemaEmitter {
   }
 
   private mutating func applyingValidation(
-    _ generated: GeneratedSchema, from node: ResolvedSchema
-  ) throws -> GeneratedSchema {
+    _ generated: SchemaFragment, from node: ResolvedSchema
+  ) throws -> SchemaFragment {
     let schema = try jsonLiteral(node.validationValue, at: node.location.pointer)
     if !includesValidationHelper {
       includesValidationHelper = true
-      declarations.append(
-        """
-        private static func _schemaValidated<Component: JSONSchemaComponent>(
-          _ component: Component, _ value: SchemaValue
-        ) -> JSONComponents.AnySchemaComponent<Component.Output> {
-          var schema = component.eraseToAnySchemaComponent()
-          schema.schemaValue = value
-          return schema
-        }
-        """)
+      declarations.append(SchemaSyntax.validationHelper)
     }
-    return GeneratedSchema(
-      expression: """
-        Self._schemaValidated(
-        \(indent(generated.expression)),
-        \(indent(schema))
-        )
-        """,
+    return SchemaFragment(
+      expression: SchemaSyntax.call(
+        SchemaSyntax.member(SchemaSyntax.reference("Self"), "_schemaWithDefinition"),
+        [
+          SchemaSyntax.argument(generated.expression),
+          SchemaSyntax.argument(schema),
+        ]),
       outputType: generated.outputType
     )
   }
 
-  private mutating func union(_ node: ResolvedSchema, keyword: String) throws -> GeneratedSchema {
+  private mutating func union(_ node: ResolvedSchema, keyword: String) throws -> SchemaFragment {
     guard let branches = node.value.object?[keyword]?.array else {
       throw failure(node.location.pointer, "Missing composition branches.")
     }
-    var outputs: [GeneratedSchema] = []
+    var outputs: [SchemaFragment] = []
     var sibling = node
     if var object = sibling.value.object {
       object.removeValue(forKey: keyword)
@@ -189,45 +187,84 @@ private struct SchemaEmitter {
     guard let first = outputs.first else {
       throw failure(node.location.pointer, "A union must have at least one branch.")
     }
-    let outputType: String
-    let body: [String]
+    let outputType: SchemaOutput
+    let body: [ExprSyntax]
     if outputs.allSatisfy({ $0.outputType == first.outputType }) {
       outputType = first.outputType
       body = outputs.map(\.expression)
     } else {
       // Identical union shapes share one nominal declaration within a namespace.
-      let key = outputs.map(\.outputType).joined(separator: "\n")
+      let key = outputs.map(\.outputType)
       if let existing = unionNames[key] {
-        outputType = existing
+        outputType = .named(existing)
       } else {
         nextUnion += 1
-        outputType = "Union\(nextUnion)"
-        unionNames[key] = outputType
-        let cases = outputs.enumerated().map {
-          "  case option\($0.offset + 1)(\($0.element.outputType))"
-        }.joined(separator: "\n")
-        declarations.append("public enum \(outputType): Sendable {\n\(cases)\n}")
+        let name = "Union\(nextUnion)"
+        outputType = .named(name)
+        unionNames[key] = name
+        declarations.append(SchemaSyntax.unionDeclaration(name, outputs: key))
       }
       body = outputs.enumerated().map {
-        $0.element.expression
-          + "\n.map { @Sendable (value: \($0.element.outputType)) -> \(outputType) in \(outputType).option\($0.offset + 1)(value) }"
+        SchemaSyntax.unionMap(
+          $0.element.expression, input: $0.element.outputType.syntax,
+          output: outputType.syntax, index: $0.offset
+        )
       }
     }
     let name = keyword == "oneOf" ? "OneOf" : "AnyOf"
-    let erasedBranches = body.map {
-      "(\n\(indent($0))\n).eraseToAnySchemaComponent()"
-    }.joined(separator: ",\n")
-    let generated = GeneratedSchema(
-      expression: """
-        JSONComposition.\(name)(into: \(outputType).self) {
-          [
-        \(indent(indent(erasedBranches)))
-          ]
-        }
-        """,
+    let branchBody: [ExprSyntax]
+    // Explicit arrays disambiguate JSONValue builder overloads and adjacent IIFEs.
+    if outputType == "JSONValue"
+      || body.contains(where: {
+        $0.firstToken(viewMode: .sourceAccurate)?.tokenKind == .leftBrace
+      })
+    {
+      let erasedBranches = body.map {
+        SchemaSyntax.call(
+          SchemaSyntax.member(
+            ExprSyntax(TupleExprSyntax(elements: [SchemaSyntax.argument($0)])),
+            "eraseToAnySchemaComponent"
+          ))
+      }
+      branchBody = [SchemaSyntax.array(erasedBranches, multiline: true)]
+    } else {
+      branchBody = body.enumerated().map {
+        $0.element.with(\.leadingTrivia, $0.offset == 0 ? [] : .newline)
+      }
+    }
+    let generated = SchemaFragment(
+      expression: SchemaSyntax.call(
+        SchemaSyntax.member(SchemaSyntax.reference("JSONComposition"), name),
+        [SchemaSyntax.argument(SchemaSyntax.metatype(outputType.syntax), label: "into")],
+        body: branchBody
+      ),
       outputType: outputType
     )
+    if let keys = sibling.value.object?.keys,
+      keys.allSatisfy(Self.commonModifierKeywords.contains)
+    {
+      return SchemaFragment(
+        expression: try applyingCommonModifiers(to: generated.expression, from: sibling),
+        outputType: outputType
+      )
+    }
     return try applyingValidation(generated, from: node)
+  }
+
+  private func inliningModifierRefinements(_ node: ResolvedSchema) -> ResolvedSchema? {
+    guard !node.refinements.isEmpty, var object = node.value.object else { return nil }
+    for refinement in node.refinements {
+      guard refinement.refinements.isEmpty, let modifiers = refinement.value.object,
+        modifiers.keys.allSatisfy(Self.commonModifierKeywords.contains),
+        modifiers.keys.allSatisfy({ object[$0] == nil })
+      else { return nil }
+      // Repeated keywords must remain separate conjunctions, not overwrite each other.
+      for (key, value) in modifiers { object[key] = value }
+    }
+    var result = node
+    result.value = .object(object)
+    result.refinements = []
+    return result
   }
 
   private func conjuncts(_ node: ResolvedSchema) -> [ResolvedSchema] {
@@ -467,16 +504,23 @@ private struct SchemaEmitter {
     }
   }
 
-  private mutating func emit(_ node: ResolvedSchema) throws -> GeneratedSchema {
+  private mutating func emit(_ node: ResolvedSchema) throws -> SchemaFragment {
     let value = node.value
     let pointer = node.location.pointer
     if case .boolean(let flag) = value {
-      return GeneratedSchema(
-        expression: """
-          JSONComponents.PassthroughComponent(
-            wrapped: JSONBooleanSchema(booleanLiteral: \(flag))
-          )
-          """,
+      return SchemaFragment(
+        expression: SchemaSyntax.call(
+          SchemaSyntax.member(SchemaSyntax.reference("JSONComponents"), "PassthroughComponent"),
+          [
+            SchemaSyntax.argument(
+              SchemaSyntax.call(
+                SchemaSyntax.reference("JSONBooleanSchema"),
+                [
+                  SchemaSyntax.argument(ExprSyntax(literal: flag), label: "booleanLiteral")
+                ]), label: "wrapped"
+            )
+          ]
+        ),
         outputType: "JSONValue"
       )
     }
@@ -488,23 +532,23 @@ private struct SchemaEmitter {
     }
 
     let (type, nullable) = try schemaType(object["type"], at: child(pointer, "type"))
-    var expression: String
-    var outputType: String
+    var expression: ExprSyntax
+    var outputType: SchemaOutput
     switch type {
     case "string":
-      expression = "JSONString()"
+      expression = SchemaSyntax.call(SchemaSyntax.reference("JSONString"))
       outputType = "String"
     case "integer":
-      expression = "JSONInteger()"
+      expression = SchemaSyntax.call(SchemaSyntax.reference("JSONInteger"))
       outputType = "Int"
     case "number":
-      expression = "JSONNumber()"
+      expression = SchemaSyntax.call(SchemaSyntax.reference("JSONNumber"))
       outputType = "Double"
     case "boolean":
-      expression = "JSONBoolean()"
+      expression = SchemaSyntax.call(SchemaSyntax.reference("JSONBoolean"))
       outputType = "Bool"
     case "null":
-      expression = "JSONNull()"
+      expression = SchemaSyntax.call(SchemaSyntax.reference("JSONNull"))
       outputType = "Void"
     case "object":
       let generated = try objectPlan(node)
@@ -517,20 +561,14 @@ private struct SchemaEmitter {
           value: .object([:]), location: node.location.child("items"), documentURI: node.documentURI
         )
       let items = try plan(itemNode)
-      expression = "JSONArray {\n\(indent(items.expression))\n}"
-      outputType = "[\(items.outputType)]"
+      expression = SchemaSyntax.call(SchemaSyntax.reference("JSONArray"), body: [items.expression])
+      outputType = .array(items.outputType)
       // The upstream array initializer only copies object-shaped item schemas.
       if case .boolean(let flag) = itemNode.value, itemNode.refinements.isEmpty {
-        expression = """
-          {
-            var schema = \(expression)
-            schema.schemaValue["items"] = .boolean(\(flag))
-            return schema
-          }()
-          """
+        expression = SchemaSyntax.booleanArray(expression, flag: flag)
       }
     default:
-      expression = "JSONAnyValue()"
+      expression = SchemaSyntax.call(SchemaSyntax.reference("JSONAnyValue"))
       outputType = "JSONValue"
     }
 
@@ -543,13 +581,15 @@ private struct SchemaEmitter {
       }
       if Self.nonnegativeIntegers.contains(key) {
         let number = try nonnegativeInteger(keyword, at: location)
-        expression += "\n.\(key)(\(number))"
+        expression = SchemaSyntax.modifier(
+          expression, key, [SchemaSyntax.argument(ExprSyntax(literal: number))])
       } else if Self.numericKeywords.contains(key) {
         let number = try finiteNumber(keyword, at: location)
         if key == "multipleOf", number <= 0 {
           throw failure(location, "'multipleOf' must be greater than zero.")
         }
-        expression += "\n.\(key)(\(number))"
+        expression = SchemaSyntax.modifier(
+          expression, key, [SchemaSyntax.argument(ExprSyntax(literal: number))])
       } else {
         switch key {
         case "pattern", "format":
@@ -561,23 +601,46 @@ private struct SchemaEmitter {
               throw failure(location, "Invalid regular expression: \(error.localizedDescription)")
             }
           }
-          expression += "\n.\(key)(\(swiftString(text)))"
+          expression = SchemaSyntax.modifier(
+            expression, key, [SchemaSyntax.argument(SchemaSyntax.stringLiteral(text))])
         case "additionalProperties", "uniqueItems":
           if key == "additionalProperties", keyword.boolean == nil {
             throw failure(
               location,
               "Schema-valued additional properties are not yet supported; expected a boolean.")
           }
-          expression += "\n.\(key)(\(try boolean(keyword, at: location)))"
+          expression = SchemaSyntax.modifier(
+            expression, key,
+            [
+              SchemaSyntax.argument(ExprSyntax(literal: try boolean(keyword, at: location)))
+            ])
         default:
           break
         }
       }
     }
 
-    for key in object.keys {
-      let location = child(pointer, key)
-      guard let keyword = object[key] else { continue }
+    expression = try applyingCommonModifiers(to: expression, from: node)
+    if nullable {
+      expression = SchemaSyntax.modifier(
+        expression, "orNull",
+        [
+          SchemaSyntax.argument(SchemaSyntax.member("type"), label: "style")
+        ])
+      outputType = .optional(outputType)
+    }
+    return SchemaFragment(expression: expression, outputType: outputType)
+  }
+
+  private func applyingCommonModifiers(to source: ExprSyntax, from node: ResolvedSchema) throws
+    -> ExprSyntax
+  {
+    guard let object = node.value.object else {
+      throw failure(node.location.pointer, "Expected an object schema for modifiers.")
+    }
+    var expression = source
+    for (key, keyword) in object {
+      let location = node.location.child(key).pointer
       switch key {
       case "title", "description", "$comment", "$id", "$schema", "$anchor":
         let text = try string(keyword, at: location)
@@ -586,45 +649,57 @@ private struct SchemaEmitter {
         }
         let method =
           ["$comment": "comment", "$id": "id", "$schema": "schema", "$anchor": "anchor"][key] ?? key
-        expression += "\n.\(method)(\(swiftString(text)))"
+        expression = SchemaSyntax.modifier(
+          expression, method, [SchemaSyntax.argument(SchemaSyntax.stringLiteral(text))])
       case "readOnly", "writeOnly", "deprecated":
-        expression += "\n.\(key)(\(try boolean(keyword, at: location)))"
+        expression = SchemaSyntax.modifier(
+          expression, key,
+          [
+            SchemaSyntax.argument(ExprSyntax(literal: try boolean(keyword, at: location)))
+          ])
       case "default", "const":
         let method = key == "const" ? "constant" : "`default`"
-        expression += "\n.\(method)(\(try jsonLiteral(keyword, at: location)))"
+        expression = SchemaSyntax.modifier(
+          expression, method,
+          [
+            SchemaSyntax.argument(try jsonLiteral(keyword, at: location))
+          ])
       case "examples":
         guard keyword.array != nil else {
           throw failure(location, "'examples' must be an array.")
         }
-        expression += "\n.examples(\(try jsonLiteral(keyword, at: location)))"
+        expression = SchemaSyntax.modifier(
+          expression, "examples",
+          [
+            SchemaSyntax.argument(try jsonLiteral(keyword, at: location))
+          ])
       default:
         break
       }
     }
-
     if let keyword = object["enum"] {
-      let location = child(pointer, "enum")
+      let location = node.location.child("enum").pointer
       guard let values = keyword.array, !values.isEmpty else {
         throw failure(location, "'enum' must be a nonempty array.")
       }
       guard Set(values).count == values.count else {
         throw failure(location, "'enum' values must be unique.")
       }
-      expression = """
-        JSONComponents.Enum(
-          upstream: \(expression),
-          cases: [\(try values.map { try jsonLiteral($0, at: location) }.joined(separator: ", "))]
-        )
-        """
+      expression = SchemaSyntax.call(
+        SchemaSyntax.member(SchemaSyntax.reference("JSONComponents"), "Enum"),
+        [
+          SchemaSyntax.argument(expression, label: "upstream"),
+          SchemaSyntax.argument(
+            SchemaSyntax.array(try values.map { try jsonLiteral($0, at: location) }),
+            label: "cases"
+          ),
+        ]
+      )
     }
-    if nullable {
-      expression += "\n.orNull(style: .type)"
-      outputType += "?"
-    }
-    return GeneratedSchema(expression: expression, outputType: outputType)
+    return expression
   }
 
-  private mutating func objectPlan(_ node: ResolvedSchema) throws -> GeneratedSchema {
+  private mutating func objectPlan(_ node: ResolvedSchema) throws -> SchemaFragment {
     let pointer = node.location.pointer
     guard let object = node.value.object else {
       throw failure(pointer, "Expected an object schema.")
@@ -649,8 +724,8 @@ private struct SchemaEmitter {
         }
       }
     }
-    var expressions: [String] = []
-    var fields: [(name: String, type: String)] = []
+    var expressions: [ExprSyntax] = []
+    var fields: [SchemaOutput.Field] = []
     for name in properties.keys {
       let location = child(child(pointer, "properties"), name)
       guard isIdentifier(name) else {
@@ -664,30 +739,31 @@ private struct SchemaEmitter {
       }
       let generated = try plan(property)
       let isRequired = required.contains(name)
-      expressions.append(
-        """
-        JSONProperty(key: \(swiftString(name))) {
-        \(indent(generated.expression))
-        }\(isRequired ? "\n.required()" : "")
-        """)
-      fields.append((name, generated.outputType + (isRequired ? "" : "?")))
+      let expression = SchemaSyntax.call(
+        SchemaSyntax.reference("JSONProperty"),
+        [SchemaSyntax.argument(SchemaSyntax.stringLiteral(name), label: "key")],
+        body: [generated.expression]
+      )
+      expressions.append(isRequired ? SchemaSyntax.modifier(expression, "required") : expression)
+      fields.append(
+        .init(
+          name: name, type: isRequired ? generated.outputType : .optional(generated.outputType)
+        ))
     }
     guard !fields.isEmpty else {
-      return GeneratedSchema(expression: "JSONObject()", outputType: "Void")
+      return SchemaFragment(
+        expression: SchemaSyntax.call(SchemaSyntax.reference("JSONObject")), outputType: "Void"
+      )
     }
-    var expression = "JSONObject {\n\(indent(expressions.joined(separator: "\n")))\n}"
-    let outputType: String
+    var expression = SchemaSyntax.call(SchemaSyntax.reference("JSONObject"), body: expressions)
+    let outputType: SchemaOutput
     if fields.count == 1 {
       outputType = fields[0].type
     } else {
-      outputType = "(" + fields.map { "`\($0.name)`: \($0.type)" }.joined(separator: ", ") + ")"
-      let values = fields.enumerated().map {
-        let label = $0.element.name == "inout" ? "`inout`" : $0.element.name
-        return "\(label): $0.\($0.offset)"
-      }
-      expression += "\n.map { (\(values.joined(separator: ", "))) }"
+      outputType = .tuple(fields)
+      expression = SchemaSyntax.tupleMap(expression, fields: fields)
     }
-    return GeneratedSchema(expression: expression, outputType: outputType)
+    return SchemaFragment(expression: expression, outputType: outputType)
   }
 
   private func schemaType(_ value: JSONValue?, at pointer: String) throws -> (String?, Bool) {
@@ -711,23 +787,40 @@ private struct SchemaEmitter {
     throw failure(pointer, "Expected a JSON Schema type name or a nullable type array.")
   }
 
-  private func jsonLiteral(_ value: JSONValue, at pointer: String) throws -> String {
+  private func jsonLiteral(_ value: JSONValue, at pointer: String) throws -> ExprSyntax {
     switch value {
-    case .string(let value): return ".string(\(swiftString(value)))"
-    case .integer(let value): return ".integer(\(value))"
+    case .string(let value):
+      return SchemaSyntax.call(
+        SchemaSyntax.member("string"), [SchemaSyntax.argument(SchemaSyntax.stringLiteral(value))])
+    case .integer(let value):
+      return SchemaSyntax.call(
+        SchemaSyntax.member("integer"), [SchemaSyntax.argument(ExprSyntax(literal: value))])
     case .number:
-      return ".number(\(try finiteNumber(value, at: pointer)))"
-    case .boolean(let value): return ".boolean(\(value))"
-    case .null: return ".null"
+      return SchemaSyntax.call(
+        SchemaSyntax.member("number"),
+        [
+          SchemaSyntax.argument(ExprSyntax(literal: try finiteNumber(value, at: pointer)))
+        ])
+    case .boolean(let value):
+      return SchemaSyntax.call(
+        SchemaSyntax.member("boolean"), [SchemaSyntax.argument(ExprSyntax(literal: value))])
+    case .null: return SchemaSyntax.member("null")
     case .array(let values):
-      return
-        ".array([\(try values.map { try jsonLiteral($0, at: pointer) }.joined(separator: ", "))])"
+      return SchemaSyntax.call(
+        SchemaSyntax.member("array"),
+        [
+          SchemaSyntax.argument(
+            SchemaSyntax.array(try values.map { try jsonLiteral($0, at: pointer) }))
+        ])
     case .object(let values):
-      if values.isEmpty { return ".object([:])" }
       let pairs = try values.map { key, value in
-        "\(swiftString(key)): \(try jsonLiteral(value, at: child(pointer, key)))"
+        (SchemaSyntax.stringLiteral(key), try jsonLiteral(value, at: child(pointer, key)))
       }
-      return ".object([\(pairs.joined(separator: ", "))])"
+      return SchemaSyntax.call(
+        SchemaSyntax.member("object"),
+        [
+          SchemaSyntax.argument(SchemaSyntax.dictionary(pairs))
+        ])
     }
   }
 
@@ -764,19 +857,6 @@ private struct SchemaEmitter {
     throw failure(pointer, "Expected a nonnegative integer representable by Swift.Int.")
   }
 
-  private func swiftString(_ value: String) -> String {
-    var result = "\""
-    for scalar in value.unicodeScalars {
-      switch scalar.value {
-      case 0x22: result += "\\\""
-      case 0x5C: result += "\\\\"
-      case 0x20...0x7E: result.unicodeScalars.append(scalar)
-      default: result += "\\u{\(String(scalar.value, radix: 16))}"
-      }
-    }
-    return result + "\""
-  }
-
   private func isIdentifier(_ value: String) -> Bool {
     let scalars = Array(value.unicodeScalars)
     guard value != "_", let first = scalars.first,
@@ -789,11 +869,6 @@ private struct SchemaEmitter {
     pointer + "/"
       + key.replacingOccurrences(of: "~", with: "~0")
       .replacingOccurrences(of: "/", with: "~1")
-  }
-
-  private func indent(_ source: String) -> String {
-    source.split(separator: "\n", omittingEmptySubsequences: false)
-      .map { "  " + $0 }.joined(separator: "\n")
   }
 
   private func failure(_ pointer: String, _ message: String) -> SchemaGenerationError {
@@ -815,6 +890,10 @@ private struct SchemaEmitter {
   private static let numericKeywords: Set<String> = [
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
   ]
+  private static let commonModifierKeywords: Set<String> = [
+    "title", "description", "$comment", "$id", "$schema", "$anchor",
+    "default", "examples", "readOnly", "writeOnly", "deprecated", "enum", "const",
+  ]
   private static let keywordTypes: [String: Set<String>] = [
     "properties": ["object"], "required": ["object"], "additionalProperties": ["object"],
     "minProperties": ["object"], "maxProperties": ["object"],
@@ -824,9 +903,7 @@ private struct SchemaEmitter {
     "exclusiveMinimum": ["number", "integer"], "exclusiveMaximum": ["number", "integer"],
     "multipleOf": ["number", "integer"],
   ]
-  private static let supportedKeywords = Set(keywordTypes.keys).union([
-    "type", "enum", "const", "title", "description", "$comment", "$id", "$schema", "$anchor",
-    "default", "examples", "readOnly", "writeOnly", "deprecated",
-    "allOf", "anyOf", "oneOf", "not",
-  ])
+  private static let supportedKeywords = Set(keywordTypes.keys)
+    .union(commonModifierKeywords)
+    .union(["type", "allOf", "anyOf", "oneOf", "not"])
 }

@@ -90,18 +90,46 @@ public struct SchemaMacro: MemberMacro {
       )
     }
     do {
-      let generated = try SchemaGenerator().generate(source)
-      let access = namespace.modifiers.first {
+      let generated = try SchemaGenerator().generateSyntax(source)
+      var modifiers = DeclModifierListSyntax()
+      if let access = namespace.modifiers.first(where: {
         $0.name.tokenKind == .keyword(.public) || $0.name.tokenKind == .keyword(.package)
-      }.map { "\($0.name.text) " } ?? ""
-      let body = generated.expression.split(separator: "\n", omittingEmptySubsequences: false)
-        .map { "    \($0)" }.joined(separator: "\n")
-      return generated.declarations.map { DeclSyntax(stringLiteral: $0) } + [
-        DeclSyntax(stringLiteral: """
-          \(access)static var schema: some JSONSchemaComponent<\(generated.outputType)> {
-          \(body)
-          }
-          """)
+      }) {
+        modifiers.append(access.trimmed)
+      }
+      modifiers.append(DeclModifierSyntax(name: .keyword(.static)))
+      let output = generated.outputType
+      let expression = generated.expression
+      #if canImport(SwiftSyntax603)
+        let outputArgument = GenericArgumentSyntax(argument: .type(output))
+      #else
+        let outputArgument = GenericArgumentSyntax(argument: output)
+      #endif
+      return generated.declarations + [
+        DeclSyntax(
+          VariableDeclSyntax(
+            modifiers: modifiers,
+            bindingSpecifier: .keyword(.var),
+            bindings: [
+              PatternBindingSyntax(
+                pattern: IdentifierPatternSyntax(identifier: "schema"),
+                typeAnnotation: TypeAnnotationSyntax(
+                  type: SomeOrAnyTypeSyntax(
+                    someOrAnySpecifier: .keyword(.some),
+                    constraint: IdentifierTypeSyntax(
+                      name: "JSONSchemaComponent",
+                      genericArgumentClause: GenericArgumentClauseSyntax(arguments: [
+                        outputArgument
+                      ])
+                    )
+                  )),
+                accessorBlock: AccessorBlockSyntax(
+                  accessors: .getter([
+                    CodeBlockItemSyntax(item: .expr(expression))
+                  ]))
+              )
+            ]
+          ))
       ]
     } catch let error as SchemaGenerationError {
       throw diagnostic(at: literal, id: "invalid-schema", message: error.description)

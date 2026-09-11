@@ -46,7 +46,7 @@ struct OpenAPIGenerate {
 
   private static func indent(_ source: String, by spaces: Int) -> String {
     source.split(separator: "\n", omittingEmptySubsequences: false)
-      .map { String(repeating: " ", count: spaces) + $0 }
+      .map { $0.isEmpty ? "" : String(repeating: " ", count: spaces) + $0 }
       .joined(separator: "\n")
   }
 }

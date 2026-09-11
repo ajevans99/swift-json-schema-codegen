@@ -18,7 +18,7 @@ struct SchemaGeneratorTests {
       }
       """)
     expectNoDifference(result.outputType, "(`z`: Int, `a`: String??)")
-    #expect(result.expression.contains(".map { (z: $0.0, a: $0.1) }"))
+    #expect(result.expression.contains(".map {\n  (z: $0.0, a: $0.1)\n}"))
     #expect(result.expression.contains(".additionalProperties(false)"))
     expectNoDifference(try generator.generate(#"{"type":"object"}"#).outputType, "Void")
   }
@@ -107,7 +107,7 @@ struct SchemaGeneratorTests {
     let generated = try generator.generate(
       #"{"type":"string","description":"\"\\(fatalError())\n\u0000\u2028"}"#
     )
-    #expect(generated.expression.contains(#".description("\"\\(fatalError())\u{a}\u{0}\u{2028}")"#))
+    #expect(generated.expression.contains(##".description(#""\(fatalError())\#n\#0\#u{2028}"#)"##))
   }
 
   @Test func keywordLabelsAreEscaped() throws {
