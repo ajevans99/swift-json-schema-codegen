@@ -57,7 +57,7 @@ struct SchemaGeneratorTests {
 
   @Test(arguments: [
     (##"{"type":"string","$ref":"#/$defs/name"}"##, "/$ref"),
-    (#"{"anyOf":[{"type":"string"}]}"#, "/anyOf"),
+    (#"{"anyOf":[]}"#, "/anyOf"),
     (#"{"type":"object","properties":{"a/b~c":{"type":"string"}}}"#, "/properties/a~1b~0c"),
     (#"{"type":"object","required":["missing"]}"#, "/required"),
     (#"{"type":"object","properties":[]}"#, "/properties"),

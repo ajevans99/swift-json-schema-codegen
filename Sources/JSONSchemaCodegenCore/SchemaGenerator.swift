@@ -5,10 +5,13 @@ import OrderedJSON
 public struct GeneratedSchema: Equatable, Sendable {
   public let expression: String
   public let outputType: String
+  /// Supporting type and helper declarations to place alongside the expression.
+  public let declarations: [String]
 
-  public init(expression: String, outputType: String) {
+  public init(expression: String, outputType: String, declarations: [String] = []) {
     self.expression = expression
     self.outputType = outputType
+    self.declarations = declarations
   }
 }
 
@@ -40,11 +43,13 @@ public struct SchemaGenerator: Sendable {
 
   public func generate(_ source: String) throws -> GeneratedSchema {
     let graph = try SchemaReferenceGraph(
-      documents: [SchemaDocument(source: source, retrievalURI: URL(fileURLWithPath: "/inline.schema.json"))],
+      documents: [
+        SchemaDocument(source: source, retrievalURI: URL(fileURLWithPath: "/inline.schema.json"))
+      ],
       includeDocumentURI: false
     )
     var emitter = SchemaEmitter()
-    return try emitter.plan(graph.root(at: 0))
+    return try emitter.generate(graph.root(at: 0))
   }
 
   /// Generates a batch using a single registry, returning results in input order.
@@ -55,43 +60,405 @@ public struct SchemaGenerator: Sendable {
     let graph = try SchemaReferenceGraph(documents: documents)
     return try documents.indices.map {
       var emitter = SchemaEmitter()
-      return try emitter.plan(graph.root(at: $0))
+      return try emitter.generate(graph.root(at: $0))
+    }
+  }
+
+  func generate(_ document: SchemaDocument, schemaPointers: [String]) throws -> [GeneratedSchema] {
+    let graph = try SchemaReferenceGraph(documents: [document], schemaPointers: schemaPointers)
+    return try schemaPointers.map {
+      var emitter = SchemaEmitter()
+      return try emitter.generate(graph.schema(at: $0))
     }
   }
 }
 
 private struct SchemaEmitter {
   private var visitedNodes = 0
+  private var declarations: [String] = []
+  private var nextUnion = 0
+  private var unionNames: [String: String] = [:]
+  private var includesValidationHelper = false
+
+  mutating func generate(_ node: ResolvedSchema) throws -> GeneratedSchema {
+    try checkSchema(node)
+    let result = try plan(node)
+    return GeneratedSchema(
+      expression: result.expression, outputType: result.outputType, declarations: declarations
+    )
+  }
 
   mutating func plan(_ node: ResolvedSchema) throws -> GeneratedSchema {
     do {
       visitedNodes += 1
       guard visitedNodes <= 10_000 else {
-        throw failure(node.location.pointer, "Schema expansion exceeds the maximum of 10000 emitted nodes.")
+        throw failure(
+          node.location.pointer, "Schema expansion exceeds the maximum of 10000 emitted nodes.")
       }
-      let generated = try emit(node)
-      guard !node.refinements.isEmpty else { return generated }
-      let siblings = try node.refinements.map { try plan($0) }
-      let constraints = siblings.map {
-        "(\n\(indent($0.expression))\n).schemaValue.value"
-      }.joined(separator: ",\n")
-      return GeneratedSchema(
-        expression: """
-          {
-            var schema = (
-          \(indent(indent(generated.expression)))
-            ).eraseToAnySchemaComponent()
-            schema.schemaValue = .object([
-              "allOf": [
-                schema.schemaValue.value,
-          \(indent(indent(indent(constraints))))
-              ]
-            ])
-            return schema
-          }()
-          """,
-        outputType: generated.outputType
+      if !node.refinements.isEmpty || node.value.object?["allOf"] != nil {
+        return try applyingValidation(
+          plan(intersection(conjuncts(node), at: node)), from: node
+        )
+      }
+      if var object = node.value.object, let anyOf = object["anyOf"], object["oneOf"] != nil {
+        object.removeValue(forKey: "anyOf")
+        var first = node
+        first.value = .object(object)
+        var second = node
+        second.value = .object(["anyOf": anyOf])
+        let combined = ResolvedSchema(
+          value: .object(["allOf": .array([first.value, second.value])]),
+          location: node.location, documentURI: node.documentURI,
+          children: ["allOf/0": first, "allOf/1": second]
+        )
+        return try applyingValidation(plan(combined), from: node)
+      }
+      for keyword in ["anyOf", "oneOf"] where node.value.object?[keyword] != nil {
+        return try union(node, keyword: keyword)
+      }
+      if node.value.object?["not"] != nil {
+        var base = node
+        if var object = base.value.object {
+          object.removeValue(forKey: "not")
+          base.value = .object(object)
+        }
+        return try applyingValidation(plan(base), from: node)
+      }
+      return try emit(node)
+    } catch let error as SchemaGenerationError {
+      throw SchemaGenerationError(
+        pointer: error.pointer, message: error.message,
+        documentURI: error.documentURI ?? node.documentURI
       )
+    }
+  }
+
+  private mutating func applyingValidation(
+    _ generated: GeneratedSchema, from node: ResolvedSchema
+  ) throws -> GeneratedSchema {
+    let schema = try jsonLiteral(node.validationValue, at: node.location.pointer)
+    if !includesValidationHelper {
+      includesValidationHelper = true
+      declarations.append(
+        """
+        private static func _schemaValidated<Component: JSONSchemaComponent>(
+          _ component: Component, _ value: SchemaValue
+        ) -> JSONComponents.AnySchemaComponent<Component.Output> {
+          var schema = component.eraseToAnySchemaComponent()
+          schema.schemaValue = value
+          return schema
+        }
+        """)
+    }
+    return GeneratedSchema(
+      expression: """
+        Self._schemaValidated(
+        \(indent(generated.expression)),
+        \(indent(schema))
+        )
+        """,
+      outputType: generated.outputType
+    )
+  }
+
+  private mutating func union(_ node: ResolvedSchema, keyword: String) throws -> GeneratedSchema {
+    guard let branches = node.value.object?[keyword]?.array else {
+      throw failure(node.location.pointer, "Missing composition branches.")
+    }
+    var outputs: [GeneratedSchema] = []
+    var sibling = node
+    if var object = sibling.value.object {
+      object.removeValue(forKey: keyword)
+      sibling.value = .object(object)
+    }
+    for index in branches.indices {
+      guard let branch = node.children["\(keyword)/\(index)"] else {
+        throw failure(node.location.pointer, "Missing resolved composition branch.")
+      }
+      if ["properties", "required", "items"].contains(where: { sibling.value.object?[$0] != nil }) {
+        let combined = ResolvedSchema(
+          value: .object(["allOf": .array([sibling.value, branch.value])]),
+          location: node.location, documentURI: node.documentURI,
+          children: ["allOf/0": sibling, "allOf/1": branch]
+        )
+        outputs.append(try plan(combined))
+      } else {
+        outputs.append(try plan(branch))
+      }
+    }
+    guard let first = outputs.first else {
+      throw failure(node.location.pointer, "A union must have at least one branch.")
+    }
+    let outputType: String
+    let body: [String]
+    if outputs.allSatisfy({ $0.outputType == first.outputType }) {
+      outputType = first.outputType
+      body = outputs.map(\.expression)
+    } else {
+      // Identical union shapes share one nominal declaration within a namespace.
+      let key = outputs.map(\.outputType).joined(separator: "\n")
+      if let existing = unionNames[key] {
+        outputType = existing
+      } else {
+        nextUnion += 1
+        outputType = "Union\(nextUnion)"
+        unionNames[key] = outputType
+        let cases = outputs.enumerated().map {
+          "  case option\($0.offset + 1)(\($0.element.outputType))"
+        }.joined(separator: "\n")
+        declarations.append("public enum \(outputType): Sendable {\n\(cases)\n}")
+      }
+      body = outputs.enumerated().map {
+        $0.element.expression
+          + "\n.map { @Sendable (value: \($0.element.outputType)) -> \(outputType) in \(outputType).option\($0.offset + 1)(value) }"
+      }
+    }
+    let name = keyword == "oneOf" ? "OneOf" : "AnyOf"
+    let erasedBranches = body.map {
+      "(\n\(indent($0))\n).eraseToAnySchemaComponent()"
+    }.joined(separator: ",\n")
+    let generated = GeneratedSchema(
+      expression: """
+        JSONComposition.\(name)(into: \(outputType).self) {
+          [
+        \(indent(indent(erasedBranches)))
+          ]
+        }
+        """,
+      outputType: outputType
+    )
+    return try applyingValidation(generated, from: node)
+  }
+
+  private func conjuncts(_ node: ResolvedSchema) -> [ResolvedSchema] {
+    var base = node
+    base.refinements = []
+    var result: [ResolvedSchema] = []
+    if var object = base.value.object, let branches = object.removeValue(forKey: "allOf")?.array {
+      base.value = .object(object)
+      for index in branches.indices {
+        if let branch = node.children["allOf/\(index)"] { result += conjuncts(branch) }
+      }
+    }
+    return [base] + result + node.refinements.flatMap(conjuncts)
+  }
+
+  /// Build only the parsing projection. Validation uses the original conjunction,
+  /// so closed objects and repeated constraints never acquire merge semantics.
+  private func intersection(_ nodes: [ResolvedSchema], at location: ResolvedSchema) throws
+    -> ResolvedSchema
+  {
+    let nodes = nodes.filter { $0.value != .boolean(true) && $0.value != .object([:]) }
+    if nodes.contains(where: { $0.value == .boolean(false) }) {
+      return ResolvedSchema(
+        value: .boolean(false), location: location.location, documentURI: location.documentURI)
+    }
+    let unionIndex = nodes.firstIndex {
+      $0.value.object?["anyOf"] != nil || $0.value.object?["oneOf"] != nil
+    }
+    if let unionIndex {
+      let union = nodes[unionIndex]
+      let keyword = union.value.object?["oneOf"] != nil ? "oneOf" : "anyOf"
+      guard let branches = union.value.object?[keyword]?.array else {
+        throw failure(union.location.pointer, "Missing union branches.")
+      }
+      var siblings = nodes
+      siblings.remove(at: unionIndex)
+      var ownSiblings = union
+      if var object = ownSiblings.value.object {
+        object.removeValue(forKey: keyword)
+        ownSiblings.value = .object(object)
+      }
+      if ownSiblings.value != .object([:]) { siblings.append(ownSiblings) }
+      guard !siblings.isEmpty else { return union }
+      var projected = ResolvedSchema(
+        value: .object([keyword: .array(branches)]),
+        location: union.location, documentURI: union.documentURI
+      )
+      for index in branches.indices {
+        guard let branch = union.children["\(keyword)/\(index)"] else {
+          throw failure(union.location.pointer, "Missing resolved union branch.")
+        }
+        let constraints = [branch] + siblings
+        projected.children["\(keyword)/\(index)"] = ResolvedSchema(
+          value: .object(["allOf": .array(constraints.map(\.value))]),
+          location: branch.location, documentURI: branch.documentURI,
+          children: Dictionary(
+            uniqueKeysWithValues: constraints.enumerated().map {
+              ("allOf/\($0.offset)", $0.element)
+            })
+        )
+      }
+      return projected
+    }
+    var domain: Set<String>?
+    for node in nodes {
+      if let type = node.value.object?["type"] {
+        let (name, nullable) = try schemaType(type, at: node.location.child("type").pointer)
+        var types: Set<String> = [name ?? ""]
+        if name == "number" { types.insert("integer") }
+        if nullable { types.insert("null") }
+        domain = domain.map { $0.intersection(types) } ?? types
+      }
+    }
+    guard var domain else {
+      return ResolvedSchema(
+        value: .object([:]), location: location.location, documentURI: location.documentURI)
+    }
+    if domain.isEmpty {
+      return ResolvedSchema(
+        value: .boolean(false), location: location.location, documentURI: location.documentURI)
+    }
+    if domain.contains("number") { domain.remove("integer") }
+    let nullable = domain.count > 1 && domain.contains("null")
+    let type = domain.first(where: { $0 != "null" }) ?? "null"
+    var projection = ResolvedSchema(
+      value: .object(["type": nullable ? .array([.string(type), .string("null")]) : .string(type)]),
+      location: location.location, documentURI: location.documentURI
+    )
+    if type == "object" {
+      var properties = JSONValue.object([:])
+      var required: [JSONValue] = []
+      var fields: [String: [ResolvedSchema]] = [:]
+      var order: [String] = []
+      for node in nodes {
+        if let object = node.value.object?["properties"]?.object {
+          for name in object.keys {
+            if fields[name] == nil { order.append(name) }
+            if let field = node.children["properties/" + name] {
+              fields[name, default: []].append(field)
+            }
+          }
+        }
+        for key in node.value.object?["required"]?.array ?? [] where !required.contains(key) {
+          required.append(key)
+        }
+      }
+      for key in required.compactMap(\.string) where fields[key] == nil {
+        order.append(key)
+        fields[key] = [
+          ResolvedSchema(
+            value: .object([:]), location: location.location, documentURI: location.documentURI)
+        ]
+      }
+      for name in order {
+        guard let variants = fields[name], let first = variants.first else { continue }
+        var field = first
+        if variants.count > 1 {
+          field = ResolvedSchema(
+            value: .object(["allOf": .array(variants.map(\.value))]),
+            location: first.location, documentURI: first.documentURI,
+            children: Dictionary(
+              uniqueKeysWithValues: variants.enumerated().map { ("allOf/\($0.offset)", $0.element) }
+            )
+          )
+        }
+        if var object = properties.object {
+          object[name] = field.value
+          properties = .object(object)
+        }
+        projection.children["properties/" + name] = field
+      }
+      projection.value = .object([
+        "type": nullable ? .array([.string("object"), .string("null")]) : .string("object"),
+        "properties": properties, "required": .array(required),
+      ])
+    } else if type == "array" {
+      let items = nodes.compactMap { $0.children["items"] }
+      if let first = items.first {
+        let item =
+          items.count == 1
+          ? first
+          : ResolvedSchema(
+            value: .object(["allOf": .array(items.map(\.value))]),
+            location: first.location, documentURI: first.documentURI,
+            children: Dictionary(
+              uniqueKeysWithValues: items.enumerated().map { ("allOf/\($0.offset)", $0.element) })
+          )
+        projection.children["items"] = item
+        if var object = projection.value.object {
+          object["items"] = item.value
+          projection.value = .object(object)
+        }
+      }
+    }
+    return projection
+  }
+
+  /// Validate every reachable keyword, including branches used only for validation
+  /// rather than parsing. Projection must never hide unsupported input.
+  private func checkSchema(_ node: ResolvedSchema) throws {
+    do {
+      for refinement in node.refinements { try checkSchema(refinement) }
+      guard let object = node.value.object else {
+        guard node.value.boolean != nil else {
+          throw failure(node.location.pointer, "Expected a schema object or boolean.")
+        }
+        return
+      }
+      for (key, value) in object {
+        let pointer = node.location.child(key).pointer
+        guard Self.supportedKeywords.contains(key) else {
+          throw failure(pointer, "Unsupported keyword '\(key)'.")
+        }
+        if Self.nonnegativeIntegers.contains(key) {
+          _ = try nonnegativeInteger(value, at: pointer)
+        } else if Self.numericKeywords.contains(key) {
+          let number = try finiteNumber(value, at: pointer)
+          if key == "multipleOf", number <= 0 {
+            throw failure(pointer, "'multipleOf' must be greater than zero.")
+          }
+        } else {
+          switch key {
+          case "type": _ = try schemaType(value, at: pointer)
+          case "title", "description", "$comment", "$id", "$schema", "$anchor", "format":
+            _ = try string(value, at: pointer)
+          case "pattern":
+            let pattern = try string(value, at: pointer)
+            do { _ = try NSRegularExpression(pattern: pattern) } catch {
+              throw failure(pointer, "Invalid regular expression: \(error.localizedDescription)")
+            }
+          case "readOnly", "writeOnly", "deprecated", "uniqueItems":
+            _ = try boolean(value, at: pointer)
+          case "additionalProperties":
+            guard value.boolean != nil else {
+              throw failure(
+                pointer,
+                "Schema-valued additional properties are not yet supported; expected a boolean.")
+            }
+          case "required":
+            guard let keys = value.array else {
+              throw failure(pointer, "'required' must be an array of unique property names.")
+            }
+            let strings = try keys.map { try string($0, at: pointer) }
+            guard Set(strings).count == strings.count else {
+              throw failure(pointer, "'required' must contain unique property names.")
+            }
+          case "properties":
+            if let properties = value.object {
+              for name in properties.keys where !isIdentifier(name) {
+                throw failure(
+                  node.location.child("properties").child(name).pointer,
+                  "Property name '\(name)' cannot be represented as a Swift tuple label; use an ASCII identifier."
+                )
+              }
+            }
+          case "enum":
+            guard let cases = value.array, !cases.isEmpty else {
+              throw failure(pointer, "'enum' must be a nonempty array.")
+            }
+            guard Set(cases).count == cases.count else {
+              throw failure(pointer, "'enum' values must be unique.")
+            }
+          case "examples":
+            guard value.array != nil else { throw failure(pointer, "'examples' must be an array.") }
+          default: break
+          }
+        }
+      }
+      for key in node.children.keys.sorted() {
+        if let child = node.children[key] { try checkSchema(child) }
+      }
     } catch let error as SchemaGenerationError {
       throw SchemaGenerationError(
         pointer: error.pointer, message: error.message,
@@ -144,9 +511,11 @@ private struct SchemaEmitter {
       expression = generated.expression
       outputType = generated.outputType
     case "array":
-      let itemNode = node.children["items"] ?? ResolvedSchema(
-        value: .object([:]), location: node.location.child("items"), documentURI: node.documentURI
-      )
+      let itemNode =
+        node.children["items"]
+        ?? ResolvedSchema(
+          value: .object([:]), location: node.location.child("items"), documentURI: node.documentURI
+        )
       let items = try plan(itemNode)
       expression = "JSONArray {\n\(indent(items.expression))\n}"
       outputType = "[\(items.outputType)]"
@@ -195,7 +564,9 @@ private struct SchemaEmitter {
           expression += "\n.\(key)(\(swiftString(text)))"
         case "additionalProperties", "uniqueItems":
           if key == "additionalProperties", keyword.boolean == nil {
-            throw failure(location, "Schema-valued additional properties are not yet supported; expected a boolean.")
+            throw failure(
+              location,
+              "Schema-valued additional properties are not yet supported; expected a boolean.")
           }
           expression += "\n.\(key)(\(try boolean(keyword, at: location)))"
         default:
@@ -213,7 +584,8 @@ private struct SchemaEmitter {
         if key == "$schema", text != "https://json-schema.org/draft/2020-12/schema" {
           throw failure(location, "Only the JSON Schema 2020-12 dialect is supported.")
         }
-        let method = ["$comment": "comment", "$id": "id", "$schema": "schema", "$anchor": "anchor"][key] ?? key
+        let method =
+          ["$comment": "comment", "$id": "id", "$schema": "schema", "$anchor": "anchor"][key] ?? key
         expression += "\n.\(method)(\(swiftString(text)))"
       case "readOnly", "writeOnly", "deprecated":
         expression += "\n.\(key)(\(try boolean(keyword, at: location)))"
@@ -292,7 +664,8 @@ private struct SchemaEmitter {
       }
       let generated = try plan(property)
       let isRequired = required.contains(name)
-      expressions.append("""
+      expressions.append(
+        """
         JSONProperty(key: \(swiftString(name))) {
         \(indent(generated.expression))
         }\(isRequired ? "\n.required()" : "")
@@ -347,7 +720,8 @@ private struct SchemaEmitter {
     case .boolean(let value): return ".boolean(\(value))"
     case .null: return ".null"
     case .array(let values):
-      return ".array([\(try values.map { try jsonLiteral($0, at: pointer) }.joined(separator: ", "))])"
+      return
+        ".array([\(try values.map { try jsonLiteral($0, at: pointer) }.joined(separator: ", "))])"
     case .object(let values):
       if values.isEmpty { return ".object([:])" }
       let pairs = try values.map { key, value in
@@ -412,7 +786,8 @@ private struct SchemaEmitter {
   }
 
   private func child(_ pointer: String, _ key: String) -> String {
-    pointer + "/" + key.replacingOccurrences(of: "~", with: "~0")
+    pointer + "/"
+      + key.replacingOccurrences(of: "~", with: "~0")
       .replacingOccurrences(of: "/", with: "~1")
   }
 
@@ -452,5 +827,6 @@ private struct SchemaEmitter {
   private static let supportedKeywords = Set(keywordTypes.keys).union([
     "type", "enum", "const", "title", "description", "$comment", "$id", "$schema", "$anchor",
     "default", "examples", "readOnly", "writeOnly", "deprecated",
+    "allOf", "anyOf", "oneOf", "not",
   ])
 }

@@ -1,4 +1,6 @@
 import JSONSchemaCodegenMacros
+import SwiftParser
+import SwiftSyntaxMacroExpansion
 import SwiftSyntaxMacros
 import SwiftSyntaxMacrosTestSupport
 import XCTest
@@ -120,6 +122,24 @@ final class SchemaMacroTests: XCTestCase {
     )
   }
 
+  func testGeneratedUnionMembers() {
+    let source = ##"""
+      @Schema(#"{"oneOf":[{"type":"string"},{"type":"boolean"}]}"#)
+      public enum Token {}
+      """##
+    // Runtime integration covers the full expansion; this checks the declaration
+    // contract independently of formatting in supporting generic helpers.
+    let context = BasicMacroExpansionContext()
+    let parsed = Parser.parse(source: source)
+    let expanded = parsed.expand(macros: macros, contextGenerator: { _ in context })
+    let text = expanded.description
+    XCTAssertTrue(text.contains("public enum Union1: Sendable"))
+    XCTAssertTrue(text.contains("case option1(String)"))
+    XCTAssertTrue(text.contains("case option2(Bool)"))
+    XCTAssertTrue(text.contains("public static var schema: some JSONSchemaComponent<Union1>"))
+    XCTAssertTrue(context.diagnostics.isEmpty)
+  }
+
   func testReferencedDefinitionDiagnostic() {
     assertDiagnostic(
       ###"@Schema(##"{"$defs":{"color":{"type":"string","minLength":-1}},"$ref":"#/$defs/color"}"##)"###,
@@ -193,7 +213,7 @@ final class SchemaMacroTests: XCTestCase {
   func testSchemaDiagnosticIncludesJSONPointer() {
     assertDiagnostic(
       ##"@Schema(#"{"type":"object","properties":{"value":{"type":"string","oneOf":[]}}}"#)"##,
-      message: "#/properties/value/oneOf: Unsupported keyword 'oneOf'."
+      message: "#/properties/value/oneOf: 'oneOf' must be a nonempty array of schemas."
     )
   }
 

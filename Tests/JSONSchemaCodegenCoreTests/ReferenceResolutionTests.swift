@@ -108,9 +108,9 @@ struct ReferenceResolutionTests {
       """#
     let generated = try generator.generate(source)
     expectNoDifference(generated.outputType, "String")
-    #expect(generated.expression.contains(".minLength(7)"))
+    #expect(generated.expression.contains(#""minLength": .integer(7)"#))
     #expect(!generated.expression.contains(#".id("nested/palette.json")"#))
-    #expect(generated.expression.contains(#".id("https://styles.example/schemas/root.json")"#))
+    #expect(generated.expression.contains(#""$id": .string("https://styles.example/schemas/root.json")"#))
   }
 
   @Test func pointersEnteringNestedResourcesUseTheirBaseURI() throws {
@@ -174,11 +174,14 @@ struct ReferenceResolutionTests {
       }
       """#)
     expectNoDifference(generated.outputType, "String")
-    for modifier in [".minLength(3)", ".minLength(1)", ".maxLength(12)", ".maxLength(6)"] {
+    for modifier in [
+      #""minLength": .integer(3)"#, #""minLength": .integer(1)"#,
+      #""maxLength": .integer(12)"#, #""maxLength": .integer(6)"#,
+    ] {
       #expect(generated.expression.contains(modifier))
     }
     #expect(generated.expression.contains(#""allOf""#))
-    #expect(generated.expression.contains("eraseToAnySchemaComponent()"))
+    #expect(generated.declarations.joined().contains("eraseToAnySchemaComponent()"))
   }
 
   @Test func unusedRecursiveDefinitionsDoNotPreventGeneration() throws {
@@ -204,8 +207,6 @@ struct ReferenceResolutionTests {
     (##"{"$ref":"#bad"}"##, "/$ref", "Unresolved anchor"),
     (##"{"$ref":"#"}"##, "/$ref", "Recursive reference"),
     (##"{"$defs":{"a":{"$ref":"#/$defs/b"},"b":{"$ref":"#/$defs/a"}},"$ref":"#/$defs/a"}"##, "/$defs/b/$ref", "Recursive reference"),
-    (##"{"$defs":{"a":{}},"$ref":"#/$defs/a","type":"string"}"##, "/type", "Structural sibling"),
-    (##"{"$defs":{"a":{}},"$ref":"#/$defs/a","properties":{}}"##, "/properties", "Structural sibling"),
     (#"{"$ref":"https://example.com/not-supplied.json"}"#, "/$ref", "No files or URLs"),
     (#"{"$ref":"bad%2"}"#, "/$ref", "Invalid URI"),
     (#"{"$ref":"https://example.com/with space"}"#, "/$ref", "Invalid URI"),

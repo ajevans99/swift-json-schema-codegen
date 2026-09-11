@@ -73,9 +73,9 @@ The plugin should process all schema inputs together rather than invoke codegen 
 Local `$defs`/`$ref` graph resolution and offline cross-document references are
 implemented in the shared core, CLI, and build plugin. This includes nested `$id`
 resources, static anchors, original-source diagnostics, and cycle detection.
-Reference siblings with non-structural constraints preserve intersection
-semantics; recursive schemas and structural siblings remain explicit errors.
+Reference siblings preserve intersection semantics and share `allOf`'s
+output-shaping rules. Composition now supports merged object projections,
+same-output unions and generated enum unions using the existing builder APIs.
 
-1. Support composition where a faithful tuple or value representation exists.
-2. Decide on nominal output types before supporting recursive schemas.
-3. Build an OpenAPI 3.1 adapter that extracts Schema Objects into the same planning pipeline.
+1. Decide on nominal object output types before supporting recursive schemas.
+2. Extend the bounded OpenAPI 3.1 components adapter to more document surfaces.

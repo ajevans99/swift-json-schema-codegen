@@ -1,5 +1,9 @@
 # Swift JSON Schema Codegen
 
+[![CI](https://github.com/ajevans99/swift-json-schema-codegen/actions/workflows/ci.yml/badge.svg)](https://github.com/ajevans99/swift-json-schema-codegen/actions/workflows/ci.yml)
+[![Swift versions](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fajevans99%2Fswift-json-schema-codegen%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/ajevans99/swift-json-schema-codegen)
+[![Platforms](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fajevans99%2Fswift-json-schema-codegen%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/ajevans99/swift-json-schema-codegen)
+
 Turn JSON Schema documents into typed
 [JSONSchemaBuilder](https://github.com/ajevans99/swift-json-schema) expressions.
 One generation core powers an attached `@Schema` macro, a command-line tool, and a
@@ -24,7 +28,7 @@ Add the package dependency:
 dependencies: [
   .package(
     url: "https://github.com/ajevans99/swift-json-schema-codegen.git",
-    from: "0.1.0"
+    from: "0.2.0"
   )
 ]
 ```
@@ -151,12 +155,12 @@ an implicit filesystem read.** A referenced file must be included even if it
 already exists beside an input. Relative references use the closest enclosing
 `$id`, or the input file's retrieval URI when there is no `$id`.
 
-Annotations and non-structural constraint siblings next to `$ref` retain
+Annotations and constraint siblings next to `$ref` retain
 conjunction semantics. For example, a referenced `minLength: 3` is not weakened
 by a sibling `minLength: 1`. The emitter uses a typed builder component with an
 `allOf` validation schema instead of incorrectly merging keyword dictionaries.
-Structural siblings (`type`, `properties`, `items`, and `required`) are rejected
-for now because they require a separate output-shape composition policy.
+Structural siblings (`type`, `properties`, `items`, and `required`) use the same
+output-shaping rules as `allOf`, without changing JSON Schema's validation rules.
 
 Only reachable definitions are emitted. Identifiers and anchors are removed
 from inlined copies to avoid registering the same resource repeatedly. Generated
@@ -167,6 +171,89 @@ with the original source document and JSON Pointer. Recursive schemas cannot
 produce finite tuple outputs and are rejected. Expansion is bounded to 128
 levels and 10,000 emitted nodes per schema to prevent pathological reference
 graphs from producing unbounded Swift source.
+
+## Composition
+
+Composition uses `JSONSchemaBuilder`'s existing union builders and enum mapping.
+The generator supplies the output declarations and object-field projection:
+
+| Keyword | Swift output and behavior |
+| --- | --- |
+| `allOf` | Intersects types and combines compatible object fields in declaration order; requiredness is the union of the branches' required names |
+| `anyOf` | The common output type when branch types match; otherwise a generated enum. Returns the first schema-valid, successfully parsed branch in schema order |
+| `oneOf` | The common output type or a generated enum. `parseAndValidate` requires exactly one schema-valid branch |
+| `not` | Retains the surrounding schema's output type, or `JSONValue` when unconstrained; rejects instances matching the negated schema |
+
+For mixed-type unions, generated public `Sendable` enums live inside the schema
+namespace. Names are deterministic (`Union1`, `Union2`, ...); cases correspond to
+branch order (`option1`, `option2`, ...). Identical payload-type sequences reuse a
+declaration within that namespace. Adding or reordering branches can change this
+generated API.
+
+```swift
+@Schema("""
+{"oneOf":[{"type":"string"},{"type":"number"}]}
+""")
+enum TokenSchema {}
+
+let token = try TokenSchema.schema.parseAndValidate(instance: "12")
+switch token {
+case .option1(let text): print(text)   // String
+case .option2(let number): print(number) // Double
+}
+```
+
+Object `allOf` branches can extend a base object's fields or further constrain a
+shared field. Nested objects, arrays, nullable types, and references participate
+in the same planning. Fields that are required without a declared schema are
+captured as `JSONValue`. An intersection with no explicit type keeps `JSONValue`
+rather than incorrectly inferring a type from an inapplicable keyword.
+
+**Field projection is not schema merging.** The original conjunction remains
+the validation schema: `additionalProperties: false` in one branch does not
+start accepting fields introduced by another, and weaker sibling bounds never
+replace stronger bounds. Type-incompatible intersections accept no instances.
+
+Use `parseAndValidate` for authoritative validity, especially `oneOf` ambiguity.
+Branch selection requires the corrected composition behavior in the package's
+minimum `swift-json-schema` 0.13.2 dependency; it does not merely check Swift types.
+
+## OpenAPI 3.1 integration
+
+`OpenAPISchemaGenerator` adapts an OpenAPI **3.1 JSON** document's named
+`components.schemas` into the same pipeline. Components preserve source order,
+original names, full `#/components/schemas/...` references, and `$id` scopes.
+
+```swift
+import Foundation
+import JSONSchemaCodegenCore
+
+let url = URL(fileURLWithPath: "style-api.openapi.json")
+let components = try OpenAPISchemaGenerator().generateComponents(
+  in: SchemaDocument(
+    source: try String(contentsOf: url, encoding: .utf8),
+    retrievalURI: url
+  )
+)
+for component in components {
+  print(component.name, component.schema.outputType)
+}
+```
+
+The [OpenAPI example](Examples/OpenAPIExample) includes a Style API document
+with reusable typography/color schemas, `allOf` theme inheritance, same-output
+font unions, and ready/pending response variants. Its integration script
+generates Swift, compiles a separate consumer, and exercises real payloads,
+including overlapping object shapes where only `const` validation selects the
+correct enum case.
+
+This is a **components adapter, not an HTTP client generator or full OpenAPI
+validator**. It does not extract inline operation schemas. YAML, OpenAPI 3.0
+`nullable`, arbitrary external documents, custom dialects, and OpenAPI-only schema
+keywords such as `discriminator` are explicitly unsupported. The OAS 3.1 base
+dialect is recognized for the supported JSON Schema subset; explicit OAS
+`$schema` values are normalized only at schema-bearing locations, not inside
+annotation payloads.
 
 ## Command-line generation
 
@@ -228,6 +315,11 @@ print(generated.expression)
 print(generated.outputType) // String
 ```
 
+`GeneratedSchema.declarations` contains generated enum and static helper declarations. Custom
+frontends must emit these inside the same namespace as the schema expression,
+before or alongside the `schema` member. The bundled macro, CLI and plugin do so
+automatically.
+
 The core preserves property order using `OrderedJSON`, emits escaped Swift
 literals without evaluating schema text, and performs no file or network I/O.
 Failures are `SchemaGenerationError` values with `pointer`, `message`, and an
@@ -264,28 +356,31 @@ The initial implementation supports JSON Schema 2020-12:
 | Numbers | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` |
 | Values | `enum`, `const` |
 | References | `$defs`, non-recursive `$ref`, nested `$id`, static `$anchor`, offline cross-document resolution |
+| Composition | `allOf`, `anyOf`, `oneOf`, `not`, including same-output and generated-enum unions |
 | Annotations | `title`, `description`, `default`, `examples`, `readOnly`, `writeOnly`, `deprecated`, `$comment` |
 | Metadata | `$id`, `$schema` for the 2020-12 dialect |
 
-Type-specific keywords require an explicit compatible `type`. Required
+Standalone type-specific keywords require an explicit compatible `type`;
+composition may establish the type through another branch. Standalone required
 properties must be declared in `properties`. Numeric representation follows
 `OrderedJSON` (`Int`/`Double`); arbitrary-precision JSON numbers are not provided.
 Defaults are annotations, not automatic value insertion.
 
-**Unsupported keywords in reachable schemas are errors**, including input
-composition (`allOf`, `anyOf`, `oneOf`), dynamic references, tuple arrays,
+**Unsupported keywords in reachable schemas are errors**, including
+dynamic references, tuple arrays,
 schema-valued additional properties, and custom extension keywords.
-Output-shape composition and an OpenAPI 3.1 adapter remain follow-on work in
-[the original plan](schema-macro-plan.md).
+Recursive schemas remain unsupported; generated enums do not make recursive
+tuple payloads representable.
 
 ## Development
 
 ```sh
 swift test
 bash Tests/CLI/smoke.sh
+bash Tests/OpenAPI/smoke.sh
 ```
 
-The smoke script also builds and runs the standalone plugin consumer. The
+The smoke scripts build and run the standalone plugin and generated OpenAPI consumers. The
 published package depends on the released `swift-json-schema` package, not an
 absolute path to a local checkout.
 

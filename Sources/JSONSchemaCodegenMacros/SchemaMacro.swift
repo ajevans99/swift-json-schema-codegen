@@ -96,7 +96,7 @@ public struct SchemaMacro: MemberMacro {
       }.map { "\($0.name.text) " } ?? ""
       let body = generated.expression.split(separator: "\n", omittingEmptySubsequences: false)
         .map { "    \($0)" }.joined(separator: "\n")
-      return [
+      return generated.declarations.map { DeclSyntax(stringLiteral: $0) } + [
         DeclSyntax(stringLiteral: """
           \(access)static var schema: some JSONSchemaComponent<\(generated.outputType)> {
           \(body)

@@ -8,7 +8,8 @@ struct SchemaLocation: Hashable {
   func child(_ token: String) -> Self {
     Self(
       document: document,
-      pointer: pointer + "/" + token.replacingOccurrences(of: "~", with: "~0")
+      pointer: pointer + "/"
+        + token.replacingOccurrences(of: "~", with: "~0")
         .replacingOccurrences(of: "/", with: "~1")
     )
   }
@@ -21,6 +22,36 @@ struct ResolvedSchema {
   var children: [String: ResolvedSchema] = [:]
   var refinements: [ResolvedSchema] = []
   var expandedNodeCount = 1
+
+  /// A self-contained validation schema, preserving conjunction boundaries.
+  var validationValue: JSONValue {
+    var value = value
+    if var object = value.object {
+      if var properties = object["properties"]?.object {
+        for name in properties.keys {
+          if let child = children["properties/" + name] {
+            properties[name] = child.validationValue
+          }
+        }
+        object["properties"] = .object(properties)
+      }
+      for keyword in ["items", "not"] {
+        if let child = children[keyword] { object[keyword] = child.validationValue }
+      }
+      for keyword in ["allOf", "anyOf", "oneOf"] {
+        if let branches = object[keyword]?.array {
+          object[keyword] = .array(
+            branches.indices.map {
+              children["\(keyword)/\($0)"]?.validationValue ?? branches[$0]
+            })
+        }
+      }
+      value = .object(object)
+    }
+    return refinements.isEmpty
+      ? value
+      : .object(["allOf": .array([value] + refinements.map(\.validationValue))])
+  }
 
   func strippingIdentifiers() -> Self {
     var copy = self
@@ -59,7 +90,10 @@ final class SchemaReferenceGraph {
   private var resolved: [SchemaLocation: ResolvedSchema] = [:]
   private var stack: [SchemaLocation] = []
 
-  init(documents: [SchemaDocument], includeDocumentURI: Bool = true) throws {
+  init(
+    documents: [SchemaDocument], includeDocumentURI: Bool = true,
+    schemaPointers: [String]? = nil
+  ) throws {
     self.documents = documents
     self.includeDocumentURI = includeDocumentURI
     var parsed: [JSONValue] = []
@@ -68,7 +102,8 @@ final class SchemaReferenceGraph {
       guard document.retrievalURI.scheme != nil,
         document.retrievalURI.fragment == nil || document.retrievalURI.fragment == ""
       else {
-        throw failure(location, "A document retrieval URI must be absolute and have no nonempty fragment.")
+        throw failure(
+          location, "A document retrieval URI must be absolute and have no nonempty fragment.")
       }
       do {
         parsed.append(try JSONValue.parse(document.source))
@@ -84,15 +119,47 @@ final class SchemaReferenceGraph {
       documents[$0].retrievalURI.absoluteString < documents[$1].retrievalURI.absoluteString
     }) {
       let location = SchemaLocation(document: documentIndex, pointer: "")
-      try index(
-        parsed[documentIndex], at: location, baseURI: documents[documentIndex].retrievalURI,
-        resource: location
-      )
+      if let schemaPointers {
+        let baseURI = documents[documentIndex].retrievalURI
+        records[location] = Record(
+          value: parsed[documentIndex], baseURI: baseURI, resource: location)
+        for pointer in schemaPointers {
+          let target = SchemaLocation(document: documentIndex, pointer: pointer)
+          let value = try value(at: pointer, in: parsed[documentIndex], reportingAt: target)
+          try index(value, at: target, baseURI: baseURI, resource: location)
+        }
+      } else {
+        try index(
+          parsed[documentIndex], at: location, baseURI: documents[documentIndex].retrievalURI,
+          resource: location
+        )
+      }
     }
   }
 
   func root(at document: Int) throws -> ResolvedSchema {
     try resolve(SchemaLocation(document: document, pointer: ""))
+  }
+
+  func schema(at pointer: String) throws -> ResolvedSchema {
+    try resolve(SchemaLocation(document: 0, pointer: pointer))
+  }
+
+  private func value(
+    at pointer: String, in document: JSONValue, reportingAt location: SchemaLocation
+  ) throws -> JSONValue {
+    guard pointer.hasPrefix("/") else {
+      throw failure(location, "Expected a nonempty JSON Pointer to a schema.")
+    }
+    var value = document
+    for part in pointer.dropFirst().split(separator: "/", omittingEmptySubsequences: false) {
+      let token = try pointerToken(String(part), at: location)
+      guard let next = value.object?[token] else {
+        throw failure(location, "Schema pointer does not exist in the document.")
+      }
+      value = next
+    }
+    return value
   }
 
   private func index(
@@ -106,7 +173,8 @@ final class SchemaReferenceGraph {
     }
     if let dialect = value.object?["$schema"] {
       guard dialect.string == "https://json-schema.org/draft/2020-12/schema" else {
-        throw failure(location.child("$schema"), "Only the JSON Schema 2020-12 dialect is supported.")
+        throw failure(
+          location.child("$schema"), "Only the JSON Schema 2020-12 dialect is supported.")
       }
     }
     var baseURI = inheritedURI
@@ -117,7 +185,8 @@ final class SchemaReferenceGraph {
       }
       baseURI = try absoluteURI(id, relativeTo: inheritedURI, at: location.child("$id"))
       guard baseURI.fragment == nil || baseURI.fragment == "" else {
-        throw failure(location.child("$id"), "'$id' must not contain a nonempty fragment; use '$anchor'.")
+        throw failure(
+          location.child("$id"), "'$id' must not contain a nonempty fragment; use '$anchor'.")
       }
       resource = location
       try register(baseURI, at: location, reportingAt: location.child("$id"))
@@ -131,7 +200,8 @@ final class SchemaReferenceGraph {
       }
       let key = Anchor(resource: resource, name: anchor)
       guard anchors[key] == nil else {
-        throw failure(location.child("$anchor"), "Duplicate '$anchor' '\(anchor)' in the same schema resource.")
+        throw failure(
+          location.child("$anchor"), "Duplicate '$anchor' '\(anchor)' in the same schema resource.")
       }
       anchors[key] = location
     }
@@ -149,6 +219,23 @@ final class SchemaReferenceGraph {
     }
     if let items = value.object?["items"] {
       try index(items, at: location.child("items"), baseURI: baseURI, resource: resource)
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+      if let raw = value.object?[keyword] {
+        guard let branches = raw.array, !branches.isEmpty else {
+          throw failure(
+            location.child(keyword), "'\(keyword)' must be a nonempty array of schemas.")
+        }
+        for (offset, branch) in branches.enumerated() {
+          try index(
+            branch, at: location.child(keyword).child(String(offset)),
+            baseURI: baseURI, resource: resource
+          )
+        }
+      }
+    }
+    if let negated = value.object?["not"] {
+      try index(negated, at: location.child("not"), baseURI: baseURI, resource: resource)
     }
     if let additional = value.object?["additionalProperties"], additional.object != nil {
       try index(
@@ -182,7 +269,8 @@ final class SchemaReferenceGraph {
       )
     }
     guard stack.count < 128 else {
-      throw failure(referenceLocation ?? location, "Schema expansion exceeds the maximum nesting depth of 128.")
+      throw failure(
+        referenceLocation ?? location, "Schema expansion exceeds the maximum nesting depth of 128.")
     }
     guard let record = records[location] else {
       throw failure(referenceLocation ?? location, "Reference target is not a schema location.")
@@ -201,23 +289,14 @@ final class SchemaReferenceGraph {
       var siblings = object
       siblings.removeValue(forKey: "$ref")
       siblings.removeValue(forKey: "$defs")
-      // These keywords would change the shape or requiredness of the inferred output.
-      for key in ["type", "properties", "items", "required"] where siblings[key] != nil {
-        throw failure(
-          location.child(key),
-          "Structural sibling '\(key)' next to '$ref' is not supported; put it in the referenced schema."
-        )
-      }
       if !siblings.isEmpty {
-        // Applying the same type to the sibling preserves keyword applicability,
-        // including null, without pretending that intersecting schemas can be merged.
-        if let type = referenced.value.object?["type"] { siblings["type"] = type }
-        referenced.refinements.append(
+        let sibling = try resolveChildren(
           ResolvedSchema(
-            value: .object(siblings), location: location, documentURI: sourceURI(location)
-          )
+            value: .object(siblings), location: location, documentURI: sourceURI(location))
         )
-        try accountForExpansion(1, in: &referenced, at: location.child("$ref"))
+        referenced.refinements.append(sibling)
+        try accountForExpansion(
+          sibling.expandedNodeCount, in: &referenced, at: location.child("$ref"))
       }
       result = referenced
     } else {
@@ -226,23 +305,39 @@ final class SchemaReferenceGraph {
         object.removeValue(forKey: "$defs")
         value = .object(object)
       }
-      var node = ResolvedSchema(value: value, location: location, documentURI: sourceURI(location))
-      if let properties = record.value.object?["properties"]?.object {
-        for name in properties.keys {
-          let child = try resolve(location.child("properties").child(name))
-          try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
-          node.children["properties/" + name] = child
-        }
-      }
-      if record.value.object?["items"] != nil {
-        let items = try resolve(location.child("items"))
-        try accountForExpansion(items.expandedNodeCount, in: &node, at: location)
-        node.children["items"] = items
-      }
-      result = node
+      result = try resolveChildren(
+        ResolvedSchema(value: value, location: location, documentURI: sourceURI(location))
+      )
     }
     resolved[location] = result
     return result
+  }
+
+  private func resolveChildren(_ input: ResolvedSchema) throws -> ResolvedSchema {
+    var node = input
+    let location = node.location
+    if let properties = node.value.object?["properties"]?.object {
+      for name in properties.keys {
+        let child = try resolve(location.child("properties").child(name))
+        try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
+        node.children["properties/" + name] = child
+      }
+    }
+    for keyword in ["items", "not"] where node.value.object?[keyword] != nil {
+      let child = try resolve(location.child(keyword))
+      try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
+      node.children[keyword] = child
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+      if let branches = node.value.object?[keyword]?.array {
+        for offset in branches.indices {
+          let child = try resolve(location.child(keyword).child(String(offset)))
+          try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
+          node.children["\(keyword)/\(offset)"] = child
+        }
+      }
+    }
+    return node
   }
 
   private func accountForExpansion(
@@ -266,7 +361,8 @@ final class SchemaReferenceGraph {
         "Unresolved reference '\(reference)': resource '\(key)' is not in the supplied document registry. No files or URLs are loaded implicitly."
       )
     }
-    let encoded = URLComponents(url: absolute, resolvingAgainstBaseURL: true)?.percentEncodedFragment ?? ""
+    let encoded =
+      URLComponents(url: absolute, resolvingAgainstBaseURL: true)?.percentEncodedFragment ?? ""
     guard let fragment = encoded.removingPercentEncoding else {
       throw failure(errorLocation, "Invalid percent encoding in reference fragment.")
     }
@@ -281,7 +377,8 @@ final class SchemaReferenceGraph {
       throw failure(errorLocation, "Unresolved schema resource '\(key)'.")
     }
     var target = root
-    for encodedToken in fragment.dropFirst().split(separator: "/", omittingEmptySubsequences: false) {
+    for encodedToken in fragment.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+    {
       let token = try pointerToken(String(encodedToken), at: errorLocation)
       if let object = value.object, let child = object[token] {
         value = child
@@ -297,7 +394,8 @@ final class SchemaReferenceGraph {
       target = target.child(token)
     }
     guard records[target] != nil else {
-      throw failure(errorLocation, "Reference '\(reference)' does not point to a schema-bearing location.")
+      throw failure(
+        errorLocation, "Reference '\(reference)' does not point to a schema-bearing location.")
     }
     return target
   }
@@ -319,7 +417,9 @@ final class SchemaReferenceGraph {
     return decoded
   }
 
-  private func absoluteURI(_ text: String, relativeTo base: URL, at location: SchemaLocation) throws -> URL {
+  private func absoluteURI(_ text: String, relativeTo base: URL, at location: SchemaLocation) throws
+    -> URL
+  {
     guard URL(string: text, encodingInvalidCharacters: false) != nil else {
       throw failure(location, "Invalid URI reference '\(text)'.")
     }
@@ -336,13 +436,15 @@ final class SchemaReferenceGraph {
       return result
     }
     guard let result = URL(string: text, relativeTo: base)?.absoluteURL, result.scheme != nil else {
-      throw failure(location, "Cannot resolve URI reference '\(text)' against '\(base.absoluteString)'.")
+      throw failure(
+        location, "Cannot resolve URI reference '\(text)' against '\(base.absoluteString)'.")
     }
     return result
   }
 
   private func resourceKey(_ uri: URL, at location: SchemaLocation) throws -> String {
-    guard var components = URLComponents(url: uri.standardized, resolvingAgainstBaseURL: true) else {
+    guard var components = URLComponents(url: uri.standardized, resolvingAgainstBaseURL: true)
+    else {
       throw failure(location, "Invalid schema resource URI '\(uri.absoluteString)'.")
     }
     components.fragment = nil
@@ -374,7 +476,8 @@ final class SchemaReferenceGraph {
     var index = 0
     while index < bytes.count {
       if bytes[index] == 37, index + 2 < bytes.count,
-        let byte = UInt8(String(decoding: bytes[(index + 1)...(index + 2)], as: UTF8.self), radix: 16)
+        let byte = UInt8(
+          String(decoding: bytes[(index + 1)...(index + 2)], as: UTF8.self), radix: 16)
       {
         if (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
           || [45, 46, 95, 126].contains(byte)

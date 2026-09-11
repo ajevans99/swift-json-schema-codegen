@@ -20,7 +20,7 @@ let package = Package(
     .plugin(name: "JSONSchemaCodegenPlugin", targets: ["JSONSchemaCodegenPlugin"]),
   ],
   dependencies: [
-    .package(url: "https://github.com/ajevans99/swift-json-schema.git", from: "0.13.1"),
+    .package(url: "https://github.com/ajevans99/swift-json-schema.git", from: "0.13.2"),
     .package(url: "https://github.com/swiftlang/swift-syntax.git", "600.0.1"..<"700.0.0"),
     .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
   ],

@@ -1,0 +1,140 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Style API",
+    "version": "1.0.0",
+    "description": "An authored example API for sharing themes and polling theme publication."
+  },
+  "servers": [
+    { "url": "https://styles.example/v1" }
+  ],
+  "paths": {
+    "/themes/{themeId}": {
+      "get": {
+        "operationId": "getTheme",
+        "summary": "Get a published theme or its publication progress",
+        "parameters": [
+          {
+            "name": "themeId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "pattern": "^theme_[a-z]+$" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A ready theme or pending publication job",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ThemeResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/themes": {
+      "get": {
+        "operationId": "listThemes",
+        "responses": {
+          "200": {
+            "description": "Current themes and pending publications",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ThemeFeed" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Typography": {
+        "type": "object",
+        "description": "Shared body typography settings.",
+        "properties": {
+          "family": { "$ref": "#/components/schemas/FontFamily" },
+          "size": { "type": "integer", "minimum": 10, "maximum": 72 },
+          "lineHeight": { "type": "number", "minimum": 1, "maximum": 2.5 }
+        },
+        "required": ["family", "size"]
+      },
+      "FontFamily": {
+        "description": "A supported web font or a CSS generic family.",
+        "anyOf": [
+          { "type": "string", "pattern": "^(Inter|Roboto|Source Sans)$" },
+          { "type": "string", "pattern": "^(serif|sans-serif|monospace)$" }
+        ]
+      },
+      "Color": {
+        "type": "string",
+        "pattern": "^#[0-9a-fA-F]{6}$",
+        "examples": ["#101828"]
+      },
+      "Palette": {
+        "type": "object",
+        "properties": {
+          "background": { "$ref": "#/components/schemas/Color" },
+          "foreground": { "$ref": "#/components/schemas/Color" },
+          "accent": { "$ref": "#/components/schemas/Color" }
+        },
+        "required": ["background", "foreground", "accent"]
+      },
+      "ThemeBase": {
+        "type": "object",
+        "description": "Identity shared by theme representations; intentionally open for allOf extension.",
+        "properties": {
+          "id": { "type": "string", "pattern": "^theme_[a-z]+$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 }
+        },
+        "required": ["id", "name"]
+      },
+      "Theme": {
+        "description": "Identity and visual settings must both be present.",
+        "allOf": [
+          { "$ref": "#/components/schemas/ThemeBase" },
+          {
+            "type": "object",
+            "properties": {
+              "palette": { "$ref": "#/components/schemas/Palette" },
+              "body": { "$ref": "#/components/schemas/Typography" },
+              "caption": { "type": "string", "maxLength": 140 }
+            },
+            "required": ["palette", "body"]
+          }
+        ]
+      },
+      "ReadyTheme": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "const": "ready" },
+          "theme": { "$ref": "#/components/schemas/Theme" }
+        },
+        "required": ["status", "theme"]
+      },
+      "PendingTheme": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "const": "pending" },
+          "jobId": { "type": "string", "minLength": 1 },
+          "retryAfter": { "type": "integer", "minimum": 1, "maximum": 60 }
+        },
+        "required": ["status", "jobId", "retryAfter"]
+      },
+      "ThemeResponse": {
+        "description": "Const-tagged alternatives use JSON Schema validation, not OpenAPI discriminator.",
+        "oneOf": [
+          { "$ref": "#/components/schemas/ReadyTheme" },
+          { "$ref": "#/components/schemas/PendingTheme" }
+        ]
+      },
+      "ThemeFeed": {
+        "type": "array",
+        "items": { "$ref": "#/components/schemas/ThemeResponse" },
+        "maxItems": 100
+      }
+    }
+  }
+}

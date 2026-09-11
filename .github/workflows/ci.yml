@@ -25,3 +25,5 @@ jobs:
         run: swift test
       - name: CLI and plugin consumer
         run: bash Tests/CLI/smoke.sh
+      - name: OpenAPI generated consumer
+        run: bash Tests/OpenAPI/smoke.sh

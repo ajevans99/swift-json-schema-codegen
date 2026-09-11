@@ -7,6 +7,8 @@
 /// Objects with multiple properties produce labeled tuples. A single-property
 /// object produces that property's value, and an empty object produces `Void`.
 /// Optional properties remain optional independently of nullable value types.
+/// Composition can add nested public `Sendable` enums named `Union1`, `Union2`,
+/// and so on, with `option1`, `option2`, ... cases in schema branch order.
 ///
 /// ```swift
 /// @Schema("""
@@ -23,6 +25,6 @@
 /// unsupported schema keywords are errors. Local `$defs`, `$ref`, `$id`, and
 /// `$anchor` references resolve within the literal. References to other files
 /// belong in the CLI or build plugin's explicit document batch.
-@attached(member, names: named(schema))
+@attached(member, names: named(schema), arbitrary)
 public macro Schema(_ json: String) =
   #externalMacro(module: "JSONSchemaCodegenMacros", type: "SchemaMacro")

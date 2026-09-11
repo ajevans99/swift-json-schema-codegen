@@ -60,6 +60,10 @@ struct JSONSchemaCodegenCLI {
         import JSONSchemaBuilder
 
         public enum \(plan.typeName) {
+        \(generated.declarations.map { declaration in
+          declaration.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "  " + $0 }.joined(separator: "\n")
+        }.joined(separator: "\n"))
           public static var schema: some JSONSchemaComponent<\(generated.outputType)> {
         \(expression)
           }

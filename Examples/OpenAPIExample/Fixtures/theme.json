@@ -1,0 +1,14 @@
+{
+  "id": "theme_midnight",
+  "name": "Midnight",
+  "palette": {
+    "background": "#101828",
+    "foreground": "#f9fafb",
+    "accent": "#7f56d9"
+  },
+  "body": {
+    "family": "serif",
+    "size": 16,
+    "lineHeight": 1.5
+  }
+}

@@ -1,0 +1,45 @@
+# OpenAPI components example
+
+This standalone Swift 6.1 package reads the authored [Style API document](Fixtures/style-api.openapi.json)
+with `OpenAPISchemaGenerator` and emits JSONSchemaBuilder declarations. It does not
+use a macro or build-tool plugin to generate the components.
+
+From the repository root, generate Swift on stdout:
+
+```sh
+swift run --package-path Examples/OpenAPIExample openapi-generate \
+  Examples/OpenAPIExample/Fixtures/style-api.openapi.json
+```
+
+Build and run the complete generated-source integration check:
+
+```sh
+bash Tests/OpenAPI/smoke.sh
+```
+
+The smoke script stages a separate consumer package under the repository's
+`.build` directory, writes generated Swift into it, then compiles and executes
+[`Consumer/main.swift`](Consumer/main.swift). Staged sources are removed on exit;
+the Swift build cache remains in `.build/openapi-consumer`.
+
+The fixture and consumer exercise:
+
+- Forward and shared `#/components/schemas/...` references.
+- An `allOf` theme combining required identity, palette, and typography fields.
+  Its base object is deliberately open: `allOf` cannot extend an object that
+  rejects the extension's fields using `additionalProperties: false`.
+- An `anyOf` font family with two pattern-constrained `String` alternatives.
+- A `oneOf` response with different ready/pending payload types. Const tags,
+  rather than merely successful object parsing, determine the generated enum case.
+- Nested array unions with supporting declarations in independent namespaces.
+- Invalid payloads rejected for missing fields, unknown tags, and violated constraints.
+
+The adapter handles only OpenAPI **3.1.x JSON** `components.schemas`. It is not a
+full OpenAPI validator or HTTP client generator. It recognizes the OpenAPI 3.1
+base dialect and JSON Schema 2020-12, but rejects unsupported schema keywords
+(including `discriminator` and legacy `nullable`), custom dialects, and OpenAPI
+3.0. It performs no network reads and does not resolve operation objects or
+rewrite references. Explicit OpenAPI base `$schema` declarations are normalized
+to JSON Schema 2020-12 at schema-bearing locations; annotations and `$id` scopes
+are preserved. The small example emitter requires ASCII identifier
+component names; the core adapter preserves arbitrary names and escaped pointers.
