@@ -281,6 +281,17 @@ print(generated.outputType) // String
 supporting `declarations`. Emit all declarations inside the same namespace as
 the `schema` member; they may include enums and static helpers.
 
+Emission uses SwiftSyntax nodes internally; these three public properties remain
+`String`, `String`, and `[String]`. Generated source uses two-space indentation,
+multiline closures, and one modifier per line. String literals may use raw
+delimiters to preserve their exact Unicode scalars. Syntax nodes are checked
+before emission; malformed nodes produce a located `SchemaGenerationError` with
+compiler-style generated-source diagnostics. Round-trip parser tests and
+generated-consumer compilation cover the serialized source.
+
+SwiftSyntax is a generation-time dependency of the core, CLI, and macro tool,
+not a runtime dependency of applications using the generated schemas.
+
 The core performs no file or network I/O. Errors are `SchemaGenerationError`
 values with `pointer`, `message`, and an optional `documentURI`.
 

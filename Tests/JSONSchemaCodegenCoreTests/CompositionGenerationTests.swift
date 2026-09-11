@@ -65,7 +65,11 @@ struct CompositionGenerationTests {
       }
       """
     ])
-    #expect(result.expression.contains(".map { @Sendable (value: String) -> Union1 in Union1.option1(value) }"))
+    #expect(result.expression.contains("""
+      .map { @Sendable (value: String) -> Union1 in
+          Union1.option1(value)
+        }
+      """))
   }
 
   @Test func nestedUnionDeclarationsAreReturnedAndReused() throws {
