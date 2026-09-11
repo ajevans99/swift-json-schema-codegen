@@ -19,10 +19,10 @@ final class SchemaMacroTests: XCTestCase {
   func testRawString() {
     assertExpansion(
       ##"@Schema(#"{"type":"string","pattern":"^\\d+$"}"#)"##,
-      expression: #"""
+      expression: ##"""
         JSONString()
-        .pattern("^\\d+$")
-        """#,
+        .pattern(#"^\d+$"#)
+        """##,
       output: "String"
     )
   }
@@ -95,7 +95,7 @@ final class SchemaMacroTests: XCTestCase {
           }
         }
         .map {
-            (name: $0.0, age: $0.1)
+          (name: $0.0, age: $0.1)
         }
         """,
       output: "(`name`: String, `age`: Int?)"
