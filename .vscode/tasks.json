@@ -1,0 +1,62 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Examples: Generate OpenAPI Swift",
+            "type": "process",
+            "command": "bash",
+            "args": [
+                "Examples/OpenAPIExample/generate.sh"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "detail": "Writes generated Swift to .build/openapi-preview/StyleAPI.generated.swift.",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            "label": "Examples: Run OpenAPI integration",
+            "type": "process",
+            "command": "bash",
+            "args": [
+                "Tests/OpenAPI/smoke.sh"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "detail": "Generates Swift, compiles a consumer, and checks valid and invalid API payloads.",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            "label": "Examples: Run build-plugin example",
+            "type": "process",
+            "command": "swift",
+            "args": [
+                "run",
+                "--package-path",
+                "Examples/PluginExample",
+                "PluginExample"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "detail": "Builds generated schemas with the SwiftPM plugin and parses the example fixtures.",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        }
+    ]
+}
