@@ -1,23 +1,43 @@
+import ArgumentParser
 import Foundation
 import JSONSchemaCodegenCore
 
 @main
-struct JSONSchemaCodegenCLI {
-  static func main() {
-    do {
-      guard let options = try Options(arguments: Array(CommandLine.arguments.dropFirst())) else {
-        print(Options.help)
-        return
-      }
-      try generate(options)
-    } catch {
-      FileHandle.standardError.write(Data("error: \(error)\n".utf8))
-      exit(EXIT_FAILURE)
-    }
-  }
+struct JSONSchemaCodegenCLI: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "json-schema-codegen",
+    abstract: "Generate typed JSONSchemaBuilder components from JSON Schema files.",
+    discussion: """
+      Each input becomes <PascalCaseBasename>Schema.generated.swift containing a
+      public enum and a static schema property. Basenames must start with an ASCII
+      letter; use letters, digits, and single '-' or '_' word separators.
+      Inputs are sorted, conflicting generated names are rejected, and unchanged
+      files are not rewritten.
 
-  private static func generate(_ options: Options) throws {
-    let inputs = options.inputs.sorted { $0.path < $1.path }
+      Use '--' before input paths that begin with '-'.
+      """
+  )
+
+  @Option(
+    name: .long,
+    help: ArgumentHelp("Directory for generated Swift files.", valueName: "directory"),
+    transform: { path in
+      guard !path.isEmpty else {
+        throw ValidationError("The output directory path must not be empty.")
+      }
+      return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+    }
+  )
+  var outputDirectory: URL
+
+  @Argument(
+    help: ArgumentHelp("JSON Schema input files.", valueName: "file.schema.json"),
+    transform: { URL(fileURLWithPath: $0).standardizedFileURL }
+  )
+  var inputs: [URL]
+
+  mutating func run() throws {
+    let inputs = inputs.sorted { $0.path < $1.path }
     var names: [String: URL] = [:]
     let plans: [(input: URL, typeName: String, output: URL)] = try inputs.map { input in
       let typeName: String
@@ -34,7 +54,7 @@ struct JSONSchemaCodegenCLI {
         )
       }
       names[collisionKey] = input
-      return (input, typeName, options.outputDirectory.appendingPathComponent(outputName))
+      return (input, typeName, outputDirectory.appendingPathComponent(outputName))
     }
 
     // Plan the complete batch before creating the directory or changing any generated files.
@@ -74,7 +94,7 @@ struct JSONSchemaCodegenCLI {
     }
 
     try FileManager.default.createDirectory(
-      at: options.outputDirectory, withIntermediateDirectories: true
+      at: outputDirectory, withIntermediateDirectories: true
     )
     for output in outputs {
       if FileManager.default.fileExists(atPath: output.url.path) {
@@ -87,75 +107,6 @@ struct JSONSchemaCodegenCLI {
         throw CLIError(message: "\(output.url.path): \(error)")
       }
     }
-  }
-}
-
-private struct Options {
-  let outputDirectory: URL
-  let inputs: [URL]
-
-  static let help = """
-    USAGE: json-schema-codegen --output-directory <directory> [--] <file.schema.json> ...
-
-    Generate typed JSONSchemaBuilder components from JSON Schema files.
-
-    OPTIONS:
-      --output-directory <directory>  Directory for generated Swift files (required).
-      -h, --help                      Show this help message.
-      --                              Treat all remaining arguments as input paths.
-
-    Each input becomes <PascalCaseBasename>Schema.generated.swift containing a
-    public enum and a static schema property. Basenames must start with an ASCII
-    letter; use letters, digits, and single '-' or '_' word separators.
-    Inputs are sorted, conflicting generated names are rejected, and unchanged
-    files are not rewritten.
-    """
-
-  init?(arguments: [String]) throws {
-    var outputPath: String?
-    var inputPaths: [String] = []
-    var positionalOnly = false
-    var index = 0
-    while index < arguments.count {
-      let argument = arguments[index]
-      if !positionalOnly {
-        switch argument {
-        case "-h", "--help":
-          return nil
-        case "--":
-          positionalOnly = true
-          index += 1
-          continue
-        case "--output-directory":
-          guard outputPath == nil else {
-            throw CLIError(message: "'--output-directory' may only be supplied once.")
-          }
-          index += 1
-          guard index < arguments.count, !arguments[index].isEmpty,
-            !arguments[index].hasPrefix("-")
-          else {
-            throw CLIError(message: "'--output-directory' requires a directory path.")
-          }
-          outputPath = arguments[index]
-          index += 1
-          continue
-        default:
-          if argument.hasPrefix("-") {
-            throw CLIError(message: "Unknown option '\(argument)'. Use '--help' for usage.")
-          }
-        }
-      }
-      inputPaths.append(argument)
-      index += 1
-    }
-    guard let outputPath else {
-      throw CLIError(message: "Missing '--output-directory <directory>'. Use '--help' for usage.")
-    }
-    guard !inputPaths.isEmpty else {
-      throw CLIError(message: "At least one '.schema.json' input is required. Use '--help' for usage.")
-    }
-    outputDirectory = URL(fileURLWithPath: outputPath, isDirectory: true).standardizedFileURL
-    inputs = inputPaths.map { URL(fileURLWithPath: $0).standardizedFileURL }
   }
 }
 

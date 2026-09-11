@@ -17,6 +17,17 @@ expect_failure() {
     fail "Expected nonzero exit: $*"
   fi
   [[ -s "$work/stderr" ]] || fail "Expected a diagnostic on stderr: $*"
+  [[ ! -s "$work/stdout" ]] || fail "Failure wrote to stdout: $*"
+}
+
+expect_usage_failure() {
+  local diagnostic="$1"
+  shift
+  expect_failure "$@"
+  grep -Fq -- "$diagnostic" "$work/stderr" ||
+    { cat "$work/stderr" >&2; fail "Missing diagnostic: $diagnostic"; }
+  grep -Eiq '^usage: json-schema-codegen' "$work/stderr" ||
+    fail "Missing usage on argument failure: $*"
 }
 
 if [[ -n "${CODEGEN_BIN:-}" ]]; then
@@ -32,17 +43,48 @@ fi
   "$root/Plugins/JSONSchemaCodegenPlugin/SchemaFileNaming.swift" ]] ||
   fail "CLI and plugin must share their naming source"
 
-"$cli" --help >"$work/help"
-grep -q 'USAGE: json-schema-codegen' "$work/help"
-"$cli" -h >"$work/short-help"
+"$cli" --help >"$work/help" 2>"$work/stderr"
+[[ ! -s "$work/stderr" ]] || fail "Help wrote to stderr"
+grep -Fq 'USAGE: json-schema-codegen --output-directory <directory> <file.schema.json> ...' "$work/help"
+grep -q '^ARGUMENTS:' "$work/help"
+grep -q '^OPTIONS:' "$work/help"
+grep -Fq -- '-h, --help' "$work/help"
+grep -Fq 'Basenames must start with an ASCII' "$work/help"
+"$cli" -h >"$work/short-help" 2>"$work/stderr"
+[[ ! -s "$work/stderr" ]] || fail "Short help wrote to stderr"
 cmp "$work/help" "$work/short-help"
-expect_failure "$cli"
-expect_failure "$cli" --output-directory
-expect_failure "$cli" --unknown
+expect_usage_failure "Missing expected argument '--output-directory <directory>'" "$cli"
+expect_usage_failure "Missing value for '--output-directory <directory>'" \
+  "$cli" --output-directory
 
 mkdir "$work/input"
 printf '%s\n' '{"type":"string","minLength":1}' >"$work/input/theme.schema.json"
 printf '%s\n' '{"type":"integer","minimum":0}' >"$work/input/user-score.schema.json"
+
+expect_usage_failure "Missing expected argument '--output-directory <directory>'" \
+  "$cli" "$work/input/theme.schema.json"
+expect_usage_failure "Missing expected argument '<file.schema.json> ...'" \
+  "$cli" --output-directory "$work/invalid-arguments"
+expect_usage_failure "Missing expected argument '<file.schema.json> ...'" \
+  "$cli" --output-directory "$work/invalid-arguments" --
+expect_usage_failure "Unknown option '--unknown'" \
+  "$cli" --output-directory "$work/invalid-arguments" "$work/input/theme.schema.json" --unknown
+expect_usage_failure "Unknown option '-x'" \
+  "$cli" -x "$work/input/theme.schema.json" --output-directory "$work/invalid-arguments"
+expect_usage_failure "Missing value for '--output-directory <directory>'" \
+  "$cli" "$work/input/theme.schema.json" --output-directory --unknown
+expect_usage_failure 'The output directory path must not be empty.' \
+  "$cli" --output-directory '' "$work/input/theme.schema.json"
+expect_usage_failure "Missing value for '--output-directory <directory>'" \
+  "$cli" "$work/input/theme.schema.json" --output-directory=
+[[ ! -e "$work/invalid-arguments" ]] || fail "Argument failure created output"
+
+"$cli" --output-directory "$work/help-output" "$work/input/missing.schema.json" --help \
+  >"$work/with-arguments-help" 2>"$work/stderr"
+cmp "$work/help" "$work/with-arguments-help"
+[[ ! -s "$work/stderr" ]] || fail "Help with arguments wrote to stderr"
+[[ ! -e "$work/help-output" ]] || fail "Help generated output"
+
 "$cli" --output-directory "$work/generated" -- \
   "$work/input/user-score.schema.json" "$work/input/theme.schema.json"
 grep -q 'public enum ThemeSchema' "$work/generated/ThemeSchema.generated.swift"
@@ -51,6 +93,33 @@ grep -q 'public enum UserScoreSchema' "$work/generated/UserScoreSchema.generated
 grep -q 'some JSONSchemaComponent<Int>' "$work/generated/UserScoreSchema.generated.swift"
 grep -qx 'import JSONSchema' "$work/generated/ThemeSchema.generated.swift"
 grep -qx 'import JSONSchemaBuilder' "$work/generated/ThemeSchema.generated.swift"
+
+"$cli" "$work/input/user-score.schema.json" --output-directory "$work/interspersed output" \
+  "$work/input/theme.schema.json"
+diff -r "$work/generated" "$work/interspersed output"
+"$cli" "$work/input/theme.schema.json" "$work/input/user-score.schema.json" \
+  --output-directory="$work/equals output"
+diff -r "$work/generated" "$work/equals output"
+"$cli" --output-directory "$work/superseded-output" "$work/input/theme.schema.json" \
+  --output-directory "$work/last-output" "$work/input/user-score.schema.json"
+[[ ! -e "$work/superseded-output" ]] || fail "A superseded output directory was created"
+diff -r "$work/generated" "$work/last-output"
+
+mkdir "$work/-inputs with spaces"
+cp "$work/input/theme.schema.json" "$work/-inputs with spaces/theme.schema.json"
+(
+  cd "$work"
+  "$cli" --output-directory=-generated -- '-inputs with spaces/theme.schema.json'
+  cmp generated/ThemeSchema.generated.swift ./-generated/ThemeSchema.generated.swift
+  expect_failure "$cli" --output-directory literal-help -- --help
+  grep -Fq "Expected a filename ending in '.schema.json'." "$work/stderr"
+  [[ ! -e literal-help ]] || fail "A literal --help input created output"
+
+  cp input/theme.schema.json ./-theme.schema.json
+  expect_failure "$cli" --output-directory invalid-basename -- -theme.schema.json
+  grep -Fq 'The schema basename must start with an ASCII letter' "$work/stderr"
+  [[ ! -e invalid-basename ]] || fail "A dash-prefixed basename created output"
+)
 
 mkdir "$work/shapes"
 printf '%s\n' 'true' >"$work/shapes/allow.schema.json"
