@@ -673,6 +673,24 @@ The smoke scripts generate Swift, then build and run the plugin and OpenAPI
 example consumers. The conformance run also needs a local official test-suite
 checkout; see its README for setup and current coverage.
 
+### Core source organization
+
+`Sources/JSONSchemaCodegenCore/` keeps the public schema document, generator,
+OpenAPI adapter, and configuration re-export at its root. Internal implementation
+files are grouped by responsibility:
+
+| Directory | Responsibility |
+| --- | --- |
+| `Planning/` | Reference resolution, parsing decisions, and the `SchemaEmitter` generation coordinator |
+| `Models/` | Semantic output identities, model definitions, symbol allocation, and recursive storage layout |
+| `Naming/` | Identifier normalization, collision rules, and naming requests |
+| `Syntax/` | Swift types, expressions, model declarations, and recursive adapters |
+
+These directories belong to one SwiftPM target, not separate modules or enforced
+dependency layers. `SchemaGenerator` remains the public facade; `SchemaEmitter`
+coordinates planning and syntax emission internally, with private state and
+helpers. Public options remain in `JSONSchemaCodegenConfiguration`.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

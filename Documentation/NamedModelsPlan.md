@@ -39,14 +39,17 @@ The working checkout already resolves recursive/dynamic references and separates
 complete validation schemas from typed parsing projections. That is a useful
 foundation, but the current planning and emission stages are intertwined.
 
+The responsibilities below describe the named-model design baseline; source
+paths follow the current Core directory layout.
+
 | Current location | Current responsibility | Planned evolution |
 | --- | --- | --- |
-| `Sources/JSONSchemaCodegenCore/SchemaReferenceGraph.swift` | Resolves references; builds finite recursive definitions; preserves validation scope | Retain behavior and expose stable provenance/specialization identity for model planning |
-| `Sources/JSONSchemaCodegenCore/SchemaGenerator.swift` | Checks schemas, plans intersections/unions/objects, and emits expressions | Extract a shared semantic parsing plan; select tuple or named-model emission afterward |
-| `Sources/JSONSchemaCodegenCore/SchemaOutput.swift` | Describes named types, containers, optionals, and tuples | Distinguish built-in types from references to generated model identities |
-| `Sources/JSONSchemaCodegenCore/SchemaSyntax.swift` | Builds types, tuple maps, unions, and validation helpers | Add structured model declarations and constructor maps |
-| `Sources/JSONSchemaCodegenCore/RecursiveSchemaSyntax.swift` | Emits public `ReferenceN` wrappers and lazy factories | Keep the legacy path; add private adapters whose outputs map to public models |
-| `Sources/JSONSchemaCodegenCore/SchemaPropertyNames.swift` | Maps arbitrary JSON keys to collision-safe Swift labels | Preserve this field-label contract; add separate type/case naming rules |
+| `Sources/JSONSchemaCodegenCore/Planning/SchemaReferenceGraph.swift` | Resolves references; builds finite recursive definitions; preserves validation scope | Retain behavior and expose stable provenance/specialization identity for model planning |
+| `Sources/JSONSchemaCodegenCore/Planning/SchemaEmitter.swift` | Checks schemas, plans intersections/unions/objects, and emits expressions | Extract a shared semantic parsing plan; select tuple or named-model emission afterward |
+| `Sources/JSONSchemaCodegenCore/Models/SchemaOutput.swift` | Describes named types, containers, optionals, and tuples | Distinguish built-in types from references to generated model identities |
+| `Sources/JSONSchemaCodegenCore/Syntax/SchemaSyntax.swift` | Builds types, tuple maps, unions, and validation helpers | Add structured model declarations and constructor maps |
+| `Sources/JSONSchemaCodegenCore/Syntax/RecursiveSchemaSyntax.swift` | Emits public `ReferenceN` wrappers and lazy factories | Keep the legacy path; add private adapters whose outputs map to public models |
+| `Sources/JSONSchemaCodegenCore/Naming/SchemaPropertyNames.swift` | Maps arbitrary JSON keys to collision-safe Swift labels | Preserve this field-label contract; add separate type/case naming rules |
 | `Sources/JSONSchemaCodegenMacros/SchemaMacro.swift` | Accepts exactly one literal and emits namespace members | Parse literal representation/naming options and pass namespace context |
 | CLI, plugin, and OpenAPI adapter | Select roots, generate namespaces, and manage files | Pass the same validated configuration to the core |
 
@@ -658,20 +661,32 @@ Do not document partially supported `.models` behavior as complete between
 phases. During development, unsupported named shapes must fail explicitly rather
 than quietly returning legacy tuple APIs.
 
-### Expected file organization
+### File organization
 
-Prefer small internal files over further growth of `SchemaGenerator.swift`:
+Core's public entry points remain at `Sources/JSONSchemaCodegenCore/`:
+`SchemaGenerator.swift`, `SchemaDocument.swift`, `OpenAPISchemaGenerator.swift`,
+and the `JSONSchemaCodegenCore.swift` configuration re-export.
 
-- `Sources/JSONSchemaCodegenConfiguration/` for public option value types.
-- `SchemaParsingPlan.swift` for shared semantic parsing operations.
-- `SchemaModelGraph.swift` for model identities and definitions.
-- `SchemaModelNames.swift` for type/case symbol allocation.
-- `SchemaModelLayout.swift` for recursion and storage decisions.
-- `SchemaModelSyntax.swift` for model declarations and constructor maps.
-- A focused CLI configuration decoder, reusing the shared option contract.
+Internal files are grouped in the same target:
 
-The exact file split can follow implementation needs. Do not introduce an
-external graph, inflection, or naming dependency for this feature.
+- `Planning/` contains `SchemaReferenceGraph.swift`, `SchemaParsingPlan.swift`,
+  `SchemaKeywords.swift`, and the extracted `SchemaEmitter.swift` coordinator.
+- `Models/` contains `SchemaOutput.swift`, `SchemaModelGraph.swift`,
+  `SchemaModelAllocation.swift`, and `SchemaModelLayout.swift`.
+- `Naming/` contains `SchemaModelNames.swift`, `SchemaModelNameRequest.swift`,
+  and `SchemaPropertyNames.swift`.
+- `Syntax/` contains `SchemaSyntax.swift`, `RecursiveSchemaSyntax.swift`,
+  `SchemaModelSyntax.swift`, and `SchemaStringEnumSyntax.swift`.
+
+`SchemaEmitter` is internal so the public generator facade can construct and
+invoke it; its planning helpers and mutable generation state remain private,
+apart from read-only access to the consumed naming overrides. The folders are
+organizational boundaries, not separate modules or a newly decoupled pipeline.
+SwiftPM discovers their sources without an explicit source list.
+
+Public option value types remain in `Sources/JSONSchemaCodegenConfiguration/`,
+shared by the core and CLI configuration decoder. No additional graph,
+inflection, or naming dependency is needed.
 
 ## 12. Test strategy and acceptance criteria
 
