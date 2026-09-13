@@ -67,15 +67,12 @@ Important current details that the refactor must preserve:
 
 ### Dependency prerequisite
 
-As checked on September 12, 2026,
+The runtime prerequisite is satisfied by `swift-json-schema` **v0.14.0**, released
+on September 13, 2026. It includes
 [ajevans99/swift-json-schema#184](https://github.com/ajevans99/swift-json-schema/pull/184)
-is merged, but the latest published release remains `v0.13.2`. The codegen
-manifest still requests `0.13.2`, and the working integration uses an editable
-runtime checkout containing `JSONComponents.Projection`.
-
-Before release, require an approved upstream version containing that API and the
-associated parsing fixes. Continue using the explicit local checkout during
-development. Do not silently fall back to the old schema-value mutation approach.
+and the `JSONComponents.Projection` API. The codegen manifest now requires
+0.14.0 or later; a local editable runtime is no longer a release prerequisite.
+Do not fall back to the old schema-value mutation approach.
 
 No additional upstream API is needed for the basic private reference-adapter
 approach. An isolated compiled prototype has verified recursive struct trees,
@@ -807,29 +804,34 @@ adding a model mapping after the legacy field-label mapping.
 
 ### Local verification
 
-Verification used Swift 6.4 on macOS with the explicit patched runtime checkout.
+The checks below were rerun on Swift 6.4 / macOS using published
+`swift-json-schema` 0.14.0, after removing all six editable runtime overrides.
+The release also introduced exact number tokens; generation now preserves
+numbers outside Swift numeric precision/range and rejects fractional count
+bounds without rounding. Focused generation and compiled macro regressions
+cover this compatibility update.
 The package's Swift 6.1/platform minimums were not changed; this is not a claim
 that the minimum compiler or Linux matrix was executed locally.
 
 | Check | Result |
 | --- | --- |
-| Full package suite | 42 XCTest macro tests, 90 runtime tests, and 145 core tests passed |
+| Full package suite | 42 XCTest macro tests, 91 runtime tests, and 148 core tests passed |
 | Separate generated library and consumer | 24 named/tuple pairs passed public type/initializer, typed-access, `Sendable`, relocation, validation parity, and negative-compilation checks |
 | CLI and plugin | Existing CLI behavior plus named design-token consumer passed |
 | Named entry points | Configuration precedence, invalid configuration, plugin regeneration, batch order, recursion policy, and escaped selectors passed |
 | OpenAPI | Both representations passed the real composed Style API consumer; original component selectors also passed explicit-name coverage |
 | Official meta-schema | Named recursive access and initialization passed; 15 valid cases, 53 invalid cases, and all eight official documents checked |
 | Official 2020-12 suite | Both modes generated 382/384 groups; 1,296 unique instances, 2,592 mode-specific checks, zero schema-value or instance-result mismatches |
-| Formatting | Strict formatting passed for all 55 changed Swift files |
+| Formatting | Strict formatting and diff whitespace checks passed for the release update; the initial implementation also passed strict formatting on all 55 changed Swift files |
 
 The two official `vocabulary.json` custom-dialect groups remain explicit
 generation failures. The full conformance command therefore exits nonzero;
 those groups are not counted as supported or silently filtered.
 
-CI now includes the named-consumer, entry-point, and meta-schema scripts
-alongside the existing package/CLI/OpenAPI checks. An approved runtime version
-containing the merged projection changes is still required before publishing;
-the dependency requirement has not been advanced, and no release was created.
+CI includes the named-consumer, entry-point, and meta-schema scripts alongside
+the existing package/CLI/OpenAPI checks. The dependency requirement has since
+advanced to the published runtime 0.14.0; editable checkout state is not part of
+the PR. No codegen release was created.
 
 ### Remaining representation boundary
 

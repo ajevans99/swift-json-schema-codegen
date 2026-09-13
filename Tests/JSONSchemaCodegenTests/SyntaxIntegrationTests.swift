@@ -35,6 +35,38 @@ struct SyntaxIntegrationTests {
     expectNoDifference(parsed.unicodeScalars.map(\.value), value.unicodeScalars.map(\.value))
   }
 
+  @Test func exactNumbersSurviveGeneratedSchemasAndValidation() throws {
+    @Schema(#"{"const":1e400,"x-tiny":1e-400,"x-decimal":0.123456789012345678901}"#)
+    enum ExactSchema {}
+    let schema = ExactSchema.schema.schemaValue
+    expectNoDifference(schema.object?["const"]?.numberLiteral?.rawValue, "1e400")
+    expectNoDifference(schema.object?["x-tiny"]?.numberLiteral?.rawValue, "1e-400")
+    expectNoDifference(
+      schema.object?["x-decimal"]?.numberLiteral?.rawValue, "0.123456789012345678901")
+    expectNoDifference(
+      try ExactSchema.schema.parseAndValidate(instance: "1e400"),
+      try JSONValue.parse("1e400"))
+    #expect(throws: (any Error).self) {
+      try ExactSchema.schema.parseAndValidate(instance: "2e400")
+    }
+
+    @Schema(#"{"type":"integer","minimum":9007199254740993}"#)
+    enum ExactMinimumSchema {}
+    expectNoDifference(
+      try ExactMinimumSchema.schema.parseAndValidate(instance: "9007199254740993"),
+      9_007_199_254_740_993)
+    #expect(throws: (any Error).self) {
+      try ExactMinimumSchema.schema.parseAndValidate(instance: "9007199254740992")
+    }
+
+    @Schema(#"{"type":"number","multipleOf":1e-400}"#)
+    enum ExactMultipleSchema {}
+    expectNoDifference(
+      ExactMultipleSchema.schema.schemaValue.object?["multipleOf"]?.numberLiteral?.rawValue,
+      "1e-400")
+    expectNoDifference(try ExactMultipleSchema.schema.parseAndValidate(instance: "1"), 1.0)
+  }
+
   @Test func generatedKeywordTupleLabelsCompileAndPreservePresence() throws {
     @Schema(
       #"""

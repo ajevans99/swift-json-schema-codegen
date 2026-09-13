@@ -5,10 +5,10 @@ This SwiftPM executable uses `JSONSchemaCodegenPlugin` and the local package at
 meta-schema and its seven vocabulary meta-schemas**. `meta.schema.json` produces
 the `MetaSchema` namespace.
 
-During development, generated recursive schemas use the upstream runtime's new
-`JSONComponents.Projection` API. Until that API is available in the resolved
-runtime release, configure a local upstream checkout as described below before
-building. The root package manifest is not changed by this setup.
+Generated recursive schemas use `JSONComponents.Projection`, available in the
+required `swift-json-schema` 0.14.0 release. SwiftPM resolves that dependency
+through the root package; no local runtime checkout is needed. The optional
+override described below is only for upstream runtime development.
 
 From the repository root:
 

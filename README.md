@@ -18,20 +18,22 @@ Generation does not synthesize `Codable` conformance.
 Swift 6.1 or later. Supports macOS 14, iOS 17, tvOS 17, watchOS 10,
 Mac Catalyst 17, visionOS 1, and later. The CLI and generation core also support Linux.
 
-**Unreleased runtime dependency:** the new coverage in this checkout requires the
-local `swift-json-schema` changes providing `JSONComponents.Projection` and the
-related parsing fixes. Published runtime version `0.13.2` is not sufficient.
-Until an upstream version is approved and published, configure the patched
-checkout explicitly:
+The package requires `swift-json-schema` **0.14.0 or later**, which includes
+`JSONComponents.Projection` and the parsing fixes needed by generated schemas.
+SwiftPM resolves the published runtime automatically; no local checkout is
+required.
+
+For upstream runtime development only, a local checkout can be selected explicitly:
 
 ```sh
-export JSON_SCHEMA_RUNTIME_PATH=/path/to/patched/swift-json-schema
+export JSON_SCHEMA_RUNTIME_PATH=/path/to/swift-json-schema
 swift package edit swift-json-schema --path "$JSON_SCHEMA_RUNTIME_PATH"
 ```
 
 The smoke scripts recognize this environment variable or the root package's
-editable `Packages/swift-json-schema` link. No unreleased dependency is downloaded
-implicitly, and the published dependency requirement has not been advanced.
+editable `Packages/swift-json-schema` link. To return to the released runtime,
+unset the variable and run `swift package unedit swift-json-schema` in every
+package where edit mode was enabled, then resolve again.
 
 ## Installation
 
@@ -550,8 +552,10 @@ Type-specific keywords constrain only applicable instances: `minLength` without
 `type` does not imply a string type, and `minimum` alongside `type: "string"`
 does not reject strings. Unconstrained projections use `JSONValue`, while retaining
 the complete validation definition. `enum` may be empty or contain duplicate
-values; an empty enum accepts no instances. Numeric representation follows
-`OrderedJSON` (`Int`/`Double`); arbitrary-precision JSON numbers are not provided.
+values; an empty enum accepts no instances. Schema literals and numeric assertions
+use `OrderedJSON`'s exact `JSONNumberLiteral` representation when Swift numeric
+literals would lose precision or range. Typed outputs remain `Int`/`Double`;
+unconstrained `JSONValue` outputs can preserve numbers outside those ranges.
 Defaults are annotations, not automatic value insertion.
 
 Unknown extension keywords are retained as annotations without interpreting
@@ -565,8 +569,10 @@ Custom `$schema` dialects and unknown required vocabularies are not implemented;
 they fail explicitly rather than silently enabling or ignoring assertions.
 References must target standard schema-bearing locations, not arbitrary
 annotation data. Generation is limited to 128 levels of nesting and 10,000
-emitted nodes per schema. Typed integer output is limited to Swift `Int` even
-when a larger mathematical integer passes schema validation.
+emitted nodes per schema. Count/length keyword arguments and typed integer output
+are limited to Swift `Int`, even when a larger mathematical integer passes schema
+validation. Typed `Double` parsing permits ordinary binary rounding but rejects
+overflow and nonzero underflow.
 
 This is not a claim of unrestricted specification conformance. The
 [generated-code conformance harness](Tests/Conformance) compiles official

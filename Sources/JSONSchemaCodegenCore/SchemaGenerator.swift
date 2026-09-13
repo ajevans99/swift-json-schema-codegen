@@ -726,8 +726,8 @@ private struct SchemaEmitter {
         if Self.nonnegativeIntegers.contains(key) {
           _ = try nonnegativeInteger(value, at: pointer)
         } else if Self.numericKeywords.contains(key) {
-          let number = try finiteNumber(value, at: pointer)
-          if key == "multipleOf", number <= 0 {
+          let number = try numberLiteral(value, at: pointer)
+          if key == "multipleOf", number <= JSONNumberLiteral(0) {
             throw failure(pointer, "'multipleOf' must be greater than zero.")
           }
         } else {
@@ -900,12 +900,12 @@ private struct SchemaEmitter {
         expression = SchemaSyntax.modifier(
           expression, key, [SchemaSyntax.argument(ExprSyntax(literal: number))])
       } else if Self.numericKeywords.contains(key) {
-        let number = try finiteNumber(keyword, at: location)
-        if key == "multipleOf", number <= 0 {
+        let number = try numberLiteral(keyword, at: location)
+        if key == "multipleOf", number <= JSONNumberLiteral(0) {
           throw failure(location, "'multipleOf' must be greater than zero.")
         }
         expression = SchemaSyntax.modifier(
-          expression, key, [SchemaSyntax.argument(ExprSyntax(literal: number))])
+          expression, key, [SchemaSyntax.argument(try numericArgument(number))])
       } else {
         switch key {
         case "pattern", "format":
@@ -1125,15 +1125,20 @@ private struct SchemaEmitter {
     case .string(let value):
       return SchemaSyntax.call(
         SchemaSyntax.member("string"), [SchemaSyntax.argument(SchemaSyntax.stringLiteral(value))])
-    case .integer(let value):
+    case .numberLiteral(let number):
+      if let integer = Int(number.rawValue), String(integer) == number.rawValue {
+        return SchemaSyntax.call(
+          SchemaSyntax.member("integer"), [SchemaSyntax.argument(ExprSyntax(literal: integer))])
+      }
+      if let double = Double(number.rawValue), double.isFinite,
+        try JSONNumberLiteral(double).rawValue == number.rawValue
+      {
+        return SchemaSyntax.call(
+          SchemaSyntax.member("number"), [SchemaSyntax.argument(ExprSyntax(literal: double))])
+      }
       return SchemaSyntax.call(
-        SchemaSyntax.member("integer"), [SchemaSyntax.argument(ExprSyntax(literal: value))])
-    case .number:
-      return SchemaSyntax.call(
-        SchemaSyntax.member("number"),
-        [
-          SchemaSyntax.argument(ExprSyntax(literal: try finiteNumber(value, at: pointer)))
-        ])
+        SchemaSyntax.member("numberLiteral"),
+        [SchemaSyntax.argument(exactNumberLiteral(number))])
     case .boolean(let value):
       return SchemaSyntax.call(
         SchemaSyntax.member("boolean"), [SchemaSyntax.argument(ExprSyntax(literal: value))])
@@ -1171,22 +1176,34 @@ private struct SchemaEmitter {
     return flag
   }
 
-  private func finiteNumber(_ value: JSONValue, at pointer: String) throws -> Double {
-    let number: Double
-    switch value {
-    case .integer(let integer): number = Double(integer)
-    case .number(let double): number = double
-    default: throw failure(pointer, "Expected a finite number.")
-    }
-    guard number.isFinite else { throw failure(pointer, "Expected a finite number.") }
+  private func numberLiteral(_ value: JSONValue, at pointer: String) throws -> JSONNumberLiteral {
+    guard let number = value.numberLiteral else { throw failure(pointer, "Expected a number.") }
     return number
   }
 
-  private func nonnegativeInteger(_ value: JSONValue, at pointer: String) throws -> Int {
-    if case .integer(let integer) = value, integer >= 0 { return integer }
-    if case .number(let number) = value, let integer = Int(exactly: number), integer >= 0 {
-      return integer
+  private func numericArgument(_ number: JSONNumberLiteral) throws -> ExprSyntax {
+    if let double = Double(number.rawValue), double.isFinite,
+      try JSONNumberLiteral(double) == number
+    {
+      return ExprSyntax(literal: double)
     }
+    return exactNumberLiteral(number)
+  }
+
+  private func exactNumberLiteral(_ number: JSONNumberLiteral) -> ExprSyntax {
+    // The generator has already validated this token; reparsing cannot fail.
+    ExprSyntax(
+      TryExprSyntax(
+        questionOrExclamationMark: .exclamationMarkToken(),
+        expression: SchemaSyntax.call(
+          SchemaSyntax.reference("JSONNumberLiteral"),
+          [SchemaSyntax.argument(SchemaSyntax.stringLiteral(number.rawValue))]
+        )
+      ))
+  }
+
+  private func nonnegativeInteger(_ value: JSONValue, at pointer: String) throws -> Int {
+    if let integer = value.integer, integer >= 0 { return integer }
     throw failure(pointer, "Expected a nonnegative integer representable by Swift.Int.")
   }
 

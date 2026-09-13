@@ -77,6 +77,28 @@ struct KeywordGenerationTests {
     #expect(try generator.generate(source).expression.contains(emitted))
   }
 
+  @Test(arguments: ["1e400", "1e-400", "0.123456789012345678901", "9223372036854775808", "-0"])
+  func exactNumberTokensArePreserved(token: String) throws {
+    let generated = try generator.generate(#"{"const":\#(token),"x-number":\#(token)}"#)
+    #expect(generated.expression.contains(#"try! JSONNumberLiteral("\#(token)")"#))
+  }
+
+  @Test(arguments: [
+    (#"{"type":"integer","minimum":9007199254740993}"#, "9007199254740993"),
+    (#"{"type":"number","multipleOf":1e-400}"#, "1e-400"),
+    (#"{"type":"number","maximum":1e400}"#, "1e400"),
+  ])
+  func exactNumericAssertionsAreNotRounded(source: String, token: String) throws {
+    let generated = try generator.generate(source)
+    #expect(generated.expression.contains(#"try! JSONNumberLiteral("\#(token)")"#))
+  }
+
+  @Test func roundedFractionIsNotAcceptedAsAnIntegerBound() {
+    #expect(throws: SchemaGenerationError.self) {
+      try generator.generate(#"{"minLength":1.00000000000000000001}"#)
+    }
+  }
+
   @Test(arguments: [
     (#"{"dependentRequired":[]}"#, "/dependentRequired"),
     (#"{"dependentRequired":{"a":true}}"#, "/dependentRequired/a"),

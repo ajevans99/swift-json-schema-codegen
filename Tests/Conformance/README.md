@@ -62,8 +62,9 @@ Rejection of a custom-dialect case in a default file is still reported as a
 generation failure. Optional format assertions and other files under `optional`
 are not included in the default run.
 
-With test-suite revision `f6fd52a0a95472e079cbfc6ef7f089702b80e045` and the patched
-local runtime, both representations generate 382 of 384 groups. All 1,296 unique
+With test-suite revision `f6fd52a0a95472e079cbfc6ef7f089702b80e045` and the published
+`swift-json-schema` 0.14.0 runtime (no editable overrides), both representations
+generate 382 of 384 groups. All 1,296 unique
 instances match validation and parsing expectations in both modes: 2,592 checks
 and no emitted-schema differences. The two `vocabulary.json` groups use
 custom `$schema` dialects, which are explicitly unsupported. Therefore the full

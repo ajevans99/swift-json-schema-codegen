@@ -24,9 +24,10 @@ object cycles must fail under `.valueTypes` and compile under the explicit
 nullable constructor arguments cannot be omitted and the legacy public
 `Reference1` adapter is unavailable in named mode.
 
-The script reuses `JSON_SCHEMA_RUNTIME_PATH` or the root editable runtime checkout
-through `Tests/Support/runtime.sh`. Like the other integration scripts, it needs
-the unreleased projection runtime described in the root README.
+The script uses the published `swift-json-schema` runtime required by the root
+package (0.14.0 or later). For upstream development it can reuse
+`JSON_SCHEMA_RUNTIME_PATH` or the root editable runtime checkout through
+`Tests/Support/runtime.sh`; neither override is required.
 
 For full keyword and reference parity, run
 `Tests/Conformance/run.sh --compare-models --recursive-objects immutable-classes`.
