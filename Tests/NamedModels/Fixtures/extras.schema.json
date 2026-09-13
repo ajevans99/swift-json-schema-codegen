@@ -1,0 +1,7 @@
+{
+  "type": "object",
+  "properties": {"name": {"type": "string"}},
+  "required": ["name", "token"],
+  "patternProperties": {"^x-": {"type": "boolean"}},
+  "additionalProperties": {"type": "integer"}
+}

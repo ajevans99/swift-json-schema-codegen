@@ -1,0 +1,21 @@
+{
+  "$defs": {
+    "A": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "b": {"$ref": "#/$defs/B"}
+      },
+      "required": ["name"]
+    },
+    "B": {
+      "type": "object",
+      "properties": {
+        "count": {"type": "integer"},
+        "a": {"$ref": "#/$defs/A"}
+      },
+      "required": ["count"]
+    }
+  },
+  "$ref": "#/$defs/A"
+}

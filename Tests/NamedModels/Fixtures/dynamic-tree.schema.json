@@ -1,0 +1,20 @@
+{
+  "$id": "https://example.com/named-strict-tree",
+  "$dynamicAnchor": "node",
+  "$ref": "tree",
+  "properties": {"extra": {"type": "boolean"}},
+  "required": ["extra"],
+  "unevaluatedProperties": false,
+  "$defs": {
+    "tree": {
+      "$id": "tree",
+      "$dynamicAnchor": "node",
+      "type": "object",
+      "properties": {
+        "value": {"type": "string"},
+        "children": {"type": "array", "items": {"$dynamicRef": "#node"}}
+      },
+      "required": ["value", "children"]
+    }
+  }
+}

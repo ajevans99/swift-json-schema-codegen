@@ -15,6 +15,10 @@ struct SchemaLocation: Hashable {
   }
 }
 
+indirect enum SchemaReferenceApplication {
+  case reference(targets: [ResolvedSchema], siblings: ResolvedSchema)
+}
+
 struct ResolvedSchema {
   var value: JSONValue
   let location: SchemaLocation
@@ -22,23 +26,29 @@ struct ResolvedSchema {
   var children: [String: ResolvedSchema] = [:]
   var refinements: [ResolvedSchema] = []
   var expandedNodeCount = 1
+  var reference: String?
+  var recursiveDefinitions: [String: ResolvedSchema] = [:]
+  var referenceApplication: SchemaReferenceApplication?
+  var modelProvenance: SchemaModelProvenance?
 
   /// A self-contained validation schema, preserving conjunction boundaries.
   var validationValue: JSONValue {
     var value = value
     if var object = value.object {
-      if var properties = object["properties"]?.object {
-        for name in properties.keys {
-          if let child = children["properties/" + name] {
-            properties[name] = child.validationValue
+      for keyword in SchemaKeywords.maps where keyword != "$defs" {
+        if var properties = object[keyword]?.object {
+          for name in properties.keys {
+            if let child = children[keyword + "/" + name] {
+              properties[name] = child.validationValue
+            }
           }
+          object[keyword] = .object(properties)
         }
-        object["properties"] = .object(properties)
       }
-      for keyword in ["items", "not"] {
+      for keyword in SchemaKeywords.singles where object[keyword] != nil {
         if let child = children[keyword] { object[keyword] = child.validationValue }
       }
-      for keyword in ["allOf", "anyOf", "oneOf"] {
+      for keyword in SchemaKeywords.arrays {
         if let branches = object[keyword]?.array {
           object[keyword] = .array(
             branches.indices.map {
@@ -48,9 +58,32 @@ struct ResolvedSchema {
       }
       value = .object(object)
     }
-    return refinements.isEmpty
+    var result: JSONValue =
+      refinements.isEmpty
       ? value
       : .object(["allOf": .array([value] + refinements.map(\.validationValue))])
+    if reference != nil, !refinements.isEmpty, var object = value.object {
+      object["allOf"] = .array(refinements.map(\.validationValue))
+      result = .object(object)
+    }
+    if case .reference(let targets, let siblings) = referenceApplication {
+      // Reference siblings share annotations with the referenced schemas.
+      // Putting the siblings in a separate allOf branch changes unevaluated*.
+      var object = siblings.validationValue.object ?? [:]
+      object["allOf"] = .array(
+        targets.map(\.validationValue) + (object["allOf"]?.array ?? []))
+      result = .object(object)
+    }
+    if !recursiveDefinitions.isEmpty {
+      var object = result.object ?? ["allOf": .array([result])]
+      var definitions = object["$defs"]?.object ?? [:]
+      for name in recursiveDefinitions.keys.sorted() {
+        definitions["__codegen_" + name] = recursiveDefinitions[name]?.validationValue
+      }
+      object["$defs"] = .object(definitions)
+      result = .object(object)
+    }
+    return result
   }
 
   func strippingIdentifiers() -> Self {
@@ -58,10 +91,17 @@ struct ResolvedSchema {
     if var object = value.object {
       object.removeValue(forKey: "$id")
       object.removeValue(forKey: "$anchor")
+      object.removeValue(forKey: "$dynamicAnchor")
       copy.value = .object(object)
     }
     copy.children = children.mapValues { $0.strippingIdentifiers() }
     copy.refinements = refinements.map { $0.strippingIdentifiers() }
+    if case .reference(let targets, let siblings) = referenceApplication {
+      copy.referenceApplication = .reference(
+        targets: targets.map { $0.strippingIdentifiers() },
+        siblings: siblings.strippingIdentifiers()
+      )
+    }
     return copy
   }
 }
@@ -82,13 +122,20 @@ final class SchemaReferenceGraph {
     let name: String
   }
 
+  private struct Resolution: Hashable {
+    let location: SchemaLocation
+    let scope: [String: SchemaLocation]
+  }
+
   private let documents: [SchemaDocument]
   private let includeDocumentURI: Bool
   private var records: [SchemaLocation: Record] = [:]
   private var resources: [String: SchemaLocation] = [:]
   private var anchors: [Anchor: SchemaLocation] = [:]
-  private var resolved: [SchemaLocation: ResolvedSchema] = [:]
-  private var stack: [SchemaLocation] = []
+  private var dynamicAnchors: [Anchor: SchemaLocation] = [:]
+  private var resolved: [Resolution: ResolvedSchema] = [:]
+  private var stack: [(resolution: Resolution, instanceDepth: Int)] = []
+  private var referenceNames: [Resolution: String] = [:]
 
   init(
     documents: [SchemaDocument], includeDocumentURI: Bool = true,
@@ -138,11 +185,25 @@ final class SchemaReferenceGraph {
   }
 
   func root(at document: Int) throws -> ResolvedSchema {
-    try resolve(SchemaLocation(document: document, pointer: ""))
+    try generation(at: SchemaLocation(document: document, pointer: ""))
   }
 
   func schema(at pointer: String) throws -> ResolvedSchema {
-    try resolve(SchemaLocation(document: 0, pointer: pointer))
+    try generation(at: SchemaLocation(document: 0, pointer: pointer))
+  }
+
+  private func generation(at location: SchemaLocation) throws -> ResolvedSchema {
+    resolved.removeAll()
+    referenceNames.removeAll()
+    var root = try resolve(location)
+    for (resolution, name) in referenceNames {
+      guard let definition = resolved[resolution] else {
+        throw failure(resolution.location, "Missing recursive schema definition.")
+      }
+      root.recursiveDefinitions[name] = definition.strippingIdentifiers()
+    }
+    if !root.recursiveDefinitions.isEmpty { root = root.strippingIdentifiers() }
+    return root
   }
 
   private func value(
@@ -192,20 +253,26 @@ final class SchemaReferenceGraph {
       try register(baseURI, at: location, reportingAt: location.child("$id"))
     }
     records[location] = Record(value: value, baseURI: baseURI, resource: resource)
-    if let anchorValue = value.object?["$anchor"] {
+    for keyword in ["$anchor", "$dynamicAnchor"] {
+      guard let anchorValue = value.object?[keyword] else { continue }
       guard let anchor = anchorValue.string,
         anchor.range(of: #"^[A-Za-z_][-A-Za-z0-9._]*$"#, options: .regularExpression) != nil
       else {
-        throw failure(location.child("$anchor"), "Expected a valid static anchor name.")
+        throw failure(
+          location.child(keyword),
+          keyword == "$anchor"
+            ? "Expected a valid static anchor name." : "Expected a valid dynamic anchor name.")
       }
       let key = Anchor(resource: resource, name: anchor)
-      guard anchors[key] == nil else {
+      guard anchors[key] == nil || anchors[key] == location else {
         throw failure(
-          location.child("$anchor"), "Duplicate '$anchor' '\(anchor)' in the same schema resource.")
+          location.child(keyword), "Duplicate '\(keyword)' '\(anchor)' in the same schema resource."
+        )
       }
       anchors[key] = location
+      if keyword == "$dynamicAnchor" { dynamicAnchors[key] = location }
     }
-    for keyword in ["$defs", "properties"] {
+    for keyword in SchemaKeywords.maps {
       if let children = value.object?[keyword] {
         guard let children = children.object else {
           throw failure(location.child(keyword), "'\(keyword)' must be an object.")
@@ -217,10 +284,7 @@ final class SchemaReferenceGraph {
         }
       }
     }
-    if let items = value.object?["items"] {
-      try index(items, at: location.child("items"), baseURI: baseURI, resource: resource)
-    }
-    for keyword in ["allOf", "anyOf", "oneOf"] {
+    for keyword in SchemaKeywords.arrays {
       if let raw = value.object?[keyword] {
         guard let branches = raw.array, !branches.isEmpty else {
           throw failure(
@@ -234,13 +298,10 @@ final class SchemaReferenceGraph {
         }
       }
     }
-    if let negated = value.object?["not"] {
-      try index(negated, at: location.child("not"), baseURI: baseURI, resource: resource)
-    }
-    if let additional = value.object?["additionalProperties"], additional.object != nil {
-      try index(
-        additional, at: location.child("additionalProperties"), baseURI: baseURI, resource: resource
-      )
+    for keyword in SchemaKeywords.singles {
+      if let child = value.object?[keyword] {
+        try index(child, at: location.child(keyword), baseURI: baseURI, resource: resource)
+      }
     }
   }
 
@@ -258,80 +319,154 @@ final class SchemaReferenceGraph {
   }
 
   private func resolve(
-    _ location: SchemaLocation, referencedFrom referenceLocation: SchemaLocation? = nil
+    _ location: SchemaLocation, referencedFrom referenceLocation: SchemaLocation? = nil,
+    scope inheritedScope: [String: SchemaLocation] = [:], instanceDepth: Int = 0
   ) throws -> ResolvedSchema {
-    if let cached = resolved[location] { return cached }
-    if let cycleStart = stack.firstIndex(of: location) {
-      let chain = (Array(stack[cycleStart...]) + [location]).map(label).joined(separator: " -> ")
-      throw failure(
-        referenceLocation ?? location,
-        "Recursive reference cannot be represented by a finite Swift tuple: \(chain)."
-      )
+    guard let record = records[location] else {
+      throw failure(referenceLocation ?? location, "Reference target is not a schema location.")
+    }
+    var scope = inheritedScope
+    for (anchor, target) in dynamicAnchors where anchor.resource == record.resource {
+      if scope[anchor.name] == nil { scope[anchor.name] = target }
+    }
+    let resolution = Resolution(location: location, scope: scope)
+    if let cached = resolved[resolution] { return cached }
+    if let cycleStart = stack.firstIndex(where: { $0.resolution == resolution }) {
+      guard instanceDepth > stack[cycleStart].instanceDepth else {
+        let chain = (stack[cycleStart...].map(\.resolution.location) + [location])
+          .map(label).joined(separator: " -> ")
+        throw failure(
+          referenceLocation ?? location,
+          "Recursive reference makes no instance progress and would evaluate indefinitely: \(chain)."
+        )
+      }
+      let name: String
+      if let existing = referenceNames[resolution] {
+        name = existing
+      } else {
+        name = "Reference\(referenceNames.count + 1)"
+        referenceNames[resolution] = name
+      }
+      return ResolvedSchema(
+        value: .object(["$ref": .string("#/$defs/__codegen_" + name)]),
+        location: location, documentURI: sourceURI(location), reference: name,
+        modelProvenance: provenance(for: resolution))
     }
     guard stack.count < 128 else {
       throw failure(
         referenceLocation ?? location, "Schema expansion exceeds the maximum nesting depth of 128.")
     }
-    guard let record = records[location] else {
-      throw failure(referenceLocation ?? location, "Reference target is not a schema location.")
-    }
-    stack.append(location)
+    stack.append((resolution, instanceDepth))
     defer { stack.removeLast() }
 
-    let result: ResolvedSchema
-    if let object = record.value.object, let reference = object["$ref"] {
-      guard let reference = reference.string else {
-        throw failure(location.child("$ref"), "Expected a string.")
+    var result: ResolvedSchema
+    if let object = record.value.object, object["$ref"] != nil || object["$dynamicRef"] != nil {
+      var references: [ResolvedSchema] = []
+      for keyword in ["$ref", "$dynamicRef"] {
+        guard let value = object[keyword] else { continue }
+        guard let reference = value.string else {
+          throw failure(location.child(keyword), "Expected a string.")
+        }
+        var target = try referenceTarget(
+          reference, from: location, record: record, keyword: keyword)
+        if keyword == "$dynamicRef",
+          let anchor = records[target]?.value.object?["$dynamicAnchor"]?.string,
+          let fragment = URLComponents(string: reference)?.percentEncodedFragment?
+            .removingPercentEncoding,
+          fragment == anchor, let dynamicTarget = scope[anchor]
+        {
+          target = dynamicTarget
+        }
+        references.append(
+          try resolve(
+            target, referencedFrom: location.child(keyword), scope: scope,
+            instanceDepth: instanceDepth
+          )
+          .strippingIdentifiers())
       }
-      let target = try referenceTarget(reference, from: location, record: record)
-      var referenced = try resolve(target, referencedFrom: location.child("$ref"))
-        .strippingIdentifiers()
+      guard var referenced = references.first else {
+        throw failure(location, "Missing schema reference.")
+      }
+      referenced.refinements.append(contentsOf: references.dropFirst())
       var siblings = object
       siblings.removeValue(forKey: "$ref")
+      siblings.removeValue(forKey: "$dynamicRef")
       siblings.removeValue(forKey: "$defs")
-      if !siblings.isEmpty {
+      siblings.removeValue(forKey: "$dynamicAnchor")
+      if !siblings.isEmpty || references.count > 1 {
         let sibling = try resolveChildren(
           ResolvedSchema(
-            value: .object(siblings), location: location, documentURI: sourceURI(location))
+            value: .object(siblings), location: location, documentURI: sourceURI(location),
+            modelProvenance: provenance(for: resolution)),
+          scope: scope, instanceDepth: instanceDepth
         )
         referenced.refinements.append(sibling)
+        referenced.referenceApplication = .reference(targets: references, siblings: sibling)
         try accountForExpansion(
-          sibling.expandedNodeCount, in: &referenced, at: location.child("$ref"))
+          sibling.expandedNodeCount, in: &referenced, at: location)
       }
       result = referenced
+      let origin = provenance(for: resolution)
+      if siblings.keys.contains(where: {
+        [
+          "type", "properties", "required", "items", "prefixItems", "additionalProperties",
+          "allOf", "anyOf", "oneOf",
+        ].contains($0)
+      }) || references.count > 1 {
+        result.modelProvenance = origin
+      } else if var provenance = result.modelProvenance {
+        provenance.origins += origin.origins
+        result.modelProvenance = provenance
+      }
     } else {
       var value = record.value
       if var object = value.object {
         object.removeValue(forKey: "$defs")
+        object.removeValue(forKey: "$dynamicAnchor")
         value = .object(object)
       }
       result = try resolveChildren(
-        ResolvedSchema(value: value, location: location, documentURI: sourceURI(location))
+        ResolvedSchema(value: value, location: location, documentURI: sourceURI(location)),
+        scope: scope, instanceDepth: instanceDepth
       )
+      result.modelProvenance = provenance(for: resolution)
     }
-    resolved[location] = result
+    resolved[resolution] = result
     return result
   }
 
-  private func resolveChildren(_ input: ResolvedSchema) throws -> ResolvedSchema {
+  private func resolveChildren(
+    _ input: ResolvedSchema, scope: [String: SchemaLocation], instanceDepth: Int
+  ) throws -> ResolvedSchema {
     var node = input
     let location = node.location
-    if let properties = node.value.object?["properties"]?.object {
-      for name in properties.keys {
-        let child = try resolve(location.child("properties").child(name))
-        try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
-        node.children["properties/" + name] = child
+    for keyword in SchemaKeywords.maps where keyword != "$defs" {
+      if let properties = node.value.object?[keyword]?.object {
+        for name in properties.keys {
+          let child = try resolve(
+            location.child(keyword).child(name), scope: scope,
+            instanceDepth: instanceDepth + (keyword == "dependentSchemas" ? 0 : 1))
+          try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
+          node.children[keyword + "/" + name] = child
+        }
       }
     }
-    for keyword in ["items", "not"] where node.value.object?[keyword] != nil {
-      let child = try resolve(location.child(keyword))
+    for keyword in SchemaKeywords.singles where node.value.object?[keyword] != nil {
+      let descends = [
+        "items", "additionalProperties", "propertyNames", "contains",
+        "unevaluatedItems", "unevaluatedProperties", "contentSchema",
+      ].contains(keyword)
+      let child = try resolve(
+        location.child(keyword), scope: scope, instanceDepth: instanceDepth + (descends ? 1 : 0))
       try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
       node.children[keyword] = child
     }
-    for keyword in ["allOf", "anyOf", "oneOf"] {
+    for keyword in SchemaKeywords.arrays {
       if let branches = node.value.object?[keyword]?.array {
         for offset in branches.indices {
-          let child = try resolve(location.child(keyword).child(String(offset)))
+          let child = try resolve(
+            location.child(keyword).child(String(offset)), scope: scope,
+            instanceDepth: instanceDepth + (keyword == "prefixItems" ? 1 : 0))
           try accountForExpansion(child.expandedNodeCount, in: &node, at: location)
           node.children["\(keyword)/\(offset)"] = child
         }
@@ -350,9 +485,9 @@ final class SchemaReferenceGraph {
   }
 
   private func referenceTarget(
-    _ reference: String, from location: SchemaLocation, record: Record
+    _ reference: String, from location: SchemaLocation, record: Record, keyword: String = "$ref"
   ) throws -> SchemaLocation {
-    let errorLocation = location.child("$ref")
+    let errorLocation = location.child(keyword)
     let absolute = try absoluteURI(reference, relativeTo: record.baseURI, at: errorLocation)
     let key = try resourceKey(absolute, at: errorLocation)
     guard let root = resources[key] else {
@@ -508,5 +643,49 @@ final class SchemaReferenceGraph {
     SchemaGenerationError(
       pointer: location.pointer, message: message, documentURI: sourceURI(location)
     )
+  }
+
+  private func provenance(for resolution: Resolution) -> SchemaModelProvenance {
+    func identity(_ location: SchemaLocation) -> String {
+      let record = records[location]
+      let resourceURI = record?.baseURI
+      let source =
+        resourceURI?.isFileURL == false
+        ? resourceURI!.absoluteString
+        : logicalName(for: location.document)
+      let resourcePointer = record?.resource.pointer ?? ""
+      let pointer =
+        resourceURI?.isFileURL == false
+        ? String(location.pointer.dropFirst(resourcePointer.count)) : location.pointer
+      return source + "#" + pointer
+    }
+    let scope = resolution.scope.keys.sorted().map {
+      $0 + "=" + identity(resolution.scope[$0]!)
+    }.joined(separator: "&")
+    let source = identity(resolution.location)
+    return SchemaModelProvenance(
+      identity: source + (scope.isEmpty ? "" : "|scope:" + scope),
+      origins: [
+        .init(
+          pointer: resolution.location.pointer, documentURI: sourceURI(resolution.location),
+          logicalDocument: logicalName(for: resolution.location.document),
+          resource: source)
+      ])
+  }
+
+  private func logicalName(for index: Int) -> String {
+    if let logicalName = documents[index].logicalName { return logicalName }
+    let components = documents[index].retrievalURI.pathComponents
+    for count in 1...max(components.count, 1) {
+      let candidate = components.suffix(count).joined(separator: "/")
+      if !documents.indices.contains(where: {
+        $0 != index && documents[$0].logicalName == nil
+          && documents[$0].retrievalURI.pathComponents.suffix(count).joined(separator: "/")
+            == candidate
+      }) {
+        return candidate
+      }
+    }
+    return documents[index].retrievalURI.lastPathComponent
   }
 }

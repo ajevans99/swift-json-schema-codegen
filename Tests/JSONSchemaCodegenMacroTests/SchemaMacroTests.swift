@@ -30,13 +30,13 @@ final class SchemaMacroTests: XCTestCase {
   func testMultilineIndentationAndLineContinuation() {
     assertExpansion(
       #"""
-        @Schema("""
-          {
-            "type": \
-            "integer"
-          }
-          """)
-        """#,
+      @Schema("""
+        {
+          "type": \
+          "integer"
+        }
+        """)
+      """#,
       expression: "JSONInteger()",
       output: "Int"
     )
@@ -53,10 +53,10 @@ final class SchemaMacroTests: XCTestCase {
   func testRawMultilineLiteral() {
     assertExpansion(
       ##"""
-        @Schema(#"""
-          {"type":"array","items":{"type":"boolean"}}
-          """#)
-        """##,
+      @Schema(#"""
+        {"type":"array","items":{"type":"boolean"}}
+        """#)
+      """##,
       expression: """
         JSONArray {
           JSONBoolean()
@@ -147,10 +147,11 @@ final class SchemaMacroTests: XCTestCase {
     )
   }
 
-  func testRecursiveReferenceDiagnostic() {
+  func testNonProgressingRecursiveReferenceDiagnostic() {
     assertDiagnostic(
       ###"@Schema(##"{"$ref":"#"}"##)"###,
-      message: "#/$ref: Recursive reference cannot be represented by a finite Swift tuple: # -> #."
+      message:
+        "#/$ref: Recursive reference makes no instance progress and would evaluate indefinitely: # -> #."
     )
   }
 
@@ -228,10 +229,31 @@ final class SchemaMacroTests: XCTestCase {
     )
   }
 
-  func testUnrepresentablePropertyDiagnosticEscapesJSONPointer() {
+  func testArbitraryPropertyLabelsProtectExistingIdentifiers() {
+    assertExpansion(
+      ##"@Schema(#"{"type":"object","properties":{"a/b~c":{"type":"string"},"a_b_c":{"type":"integer"}}}"#)"##,
+      expression: """
+        JSONObject {
+          JSONProperty(key: "a/b~c") {
+            JSONString()
+          }
+          JSONProperty(key: "a_b_c") {
+            JSONInteger()
+          }
+        }
+        .map {
+          (a_b_c_2: $0.0, a_b_c: $0.1)
+        }
+        """,
+      output: "(`a_b_c_2`: String?, `a_b_c`: Int?)"
+    )
+  }
+
+  func testPropertyDiagnosticEscapesOriginalJSONPointer() {
     assertDiagnostic(
-      ##"@Schema(#"{"type":"object","properties":{"a/b~c":{"type":"string"}}}"#)"##,
-      message: "#/properties/a~1b~0c: Property name 'a/b~c' cannot be represented as a Swift tuple label; use an ASCII identifier."
+      ##"@Schema(#"{"type":"object","properties":{"a/b~c":{"type":"string","minLength":-1}}}"#)"##,
+      message:
+        "#/properties/a~1b~0c/minLength: Expected a nonnegative integer representable by Swift.Int."
     )
   }
 

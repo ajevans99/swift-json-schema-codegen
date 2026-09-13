@@ -14,6 +14,7 @@ let package = Package(
       dependencies: [
         .product(name: "JSONSchemaCodegen", package: "swift-json-schema-codegen")
       ],
+      exclude: ["json-schema-codegen.json"],
       resources: [.copy("Schemas"), .copy("Fixtures")],
       plugins: [
         .plugin(name: "JSONSchemaCodegenPlugin", package: "swift-json-schema-codegen")

@@ -8,18 +8,28 @@ import Testing
 @testable import JSONSchemaCodegenCore
 
 struct SyntaxEmissionTests {
-  @Test(arguments: ["", "_", "1name", "a-b", "a b", "`class`", "naïve", "a\nb", "a/b~c"])
-  func invalidIdentifiersAreRejectedBeforeNodeConstruction(name: String) throws {
-    let json = try JSONSerialization.data(withJSONObject: [
-      "type": "object", "properties": [name: ["type": "string"]]
-    ])
-    do {
-      _ = try SchemaGenerator().generate(String(decoding: json, as: UTF8.self))
-      Issue.record("Invalid property names must not become identifier tokens")
-    } catch let error as SchemaGenerationError {
-      #expect(error.pointer.hasPrefix("/properties/"))
-      #expect(error.message.contains("use an ASCII identifier"))
-    }
+  @Test(arguments: [
+    ("", "property"), ("_", "property"), ("1name", "_1name"), ("a-b", "a_b"),
+    ("a b", "a_b"), ("`class`", "class"), ("naïve", "na_ve"), ("a\nb", "a_b"),
+    ("a/b~c", "a_b_c"),
+  ])
+  func arbitraryPropertyKeysProduceValidIdentifierNodes(name: String, label: String) throws {
+    let json = try JSONSerialization.data(
+      withJSONObject: [
+        "type": "object",
+        "properties": [name: ["type": "string"], "zzSentinel": ["type": "boolean"]],
+      ],
+      options: .sortedKeys
+    )
+    let generated = try SchemaGenerator().generate(String(decoding: json, as: UTF8.self))
+    expectNoDifference(generated.outputType, "(`\(label)`: String?, `zzSentinel`: Bool?)")
+    let file = Parser.parse(
+      source: """
+        typealias Output = \(generated.outputType)
+        let schema = \(generated.expression)
+        """)
+    #expect(!file.hasError)
+    #expect(ParseDiagnosticsGenerator.diagnostics(for: file).isEmpty)
   }
 
   @Test(arguments: [

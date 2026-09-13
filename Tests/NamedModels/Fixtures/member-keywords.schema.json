@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "self": {"type": "integer"},
+    "_self": {"type": "integer"},
+    "_self_2": {"type": "integer"},
+    "Self": {"type": "integer"},
+    "init": {"type": "integer"},
+    "deinit": {"type": "integer"},
+    "Type": {"type": "integer"},
+    "Protocol": {"type": "integer"}
+  },
+  "required": ["self", "_self", "_self_2", "Self", "init", "deinit", "Type", "Protocol"],
+  "additionalProperties": false
+}

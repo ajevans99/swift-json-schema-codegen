@@ -1,0 +1,22 @@
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "state": {"const": "ready", "type": "string"},
+        "payload": {"type": "string"}
+      },
+      "required": ["state", "payload"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "state": {"const": "pending", "type": "string"},
+        "retryAfter": {"type": "integer"}
+      },
+      "required": ["state", "retryAfter"],
+      "additionalProperties": false
+    }
+  ]
+}

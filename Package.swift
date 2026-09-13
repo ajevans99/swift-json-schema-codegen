@@ -26,9 +26,11 @@ let package = Package(
     .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
   ],
   targets: [
+    .target(name: "JSONSchemaCodegenConfiguration"),
     .target(
       name: "JSONSchemaCodegenCore",
       dependencies: [
+        "JSONSchemaCodegenConfiguration",
         .product(name: "OrderedJSON", package: "swift-json-schema"),
         .product(name: "SwiftBasicFormat", package: "swift-syntax"),
         .product(name: "SwiftParserDiagnostics", package: "swift-syntax"),
@@ -51,6 +53,7 @@ let package = Package(
     .target(
       name: "JSONSchemaCodegen",
       dependencies: [
+        "JSONSchemaCodegenConfiguration",
         "JSONSchemaCodegenMacros",
         .product(name: "JSONSchemaBuilder", package: "swift-json-schema"),
       ]

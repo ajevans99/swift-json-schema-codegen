@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "": {"type": "string"},
+    "property": {"type": "string"},
+    "$id": {"type": "integer"},
+    "id": {"type": "integer"},
+    "class": {"type": "boolean"},
+    "a-b": {"type": "number"},
+    "a_b": {"type": "number"},
+    "e\u0301": {"type": "string"}
+  },
+  "required": ["", "property", "$id", "id", "class", "a-b", "a_b", "e\u0301"],
+  "additionalProperties": false
+}

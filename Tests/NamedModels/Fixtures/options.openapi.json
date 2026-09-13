@@ -1,0 +1,19 @@
+{
+  "openapi": "3.1.0",
+  "components": {
+    "schemas": {
+      "Envelope": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {"number": {"type": "integer"}},
+            "required": ["number"]
+          },
+          "result": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+        },
+        "required": ["payload", "result"]
+      }
+    }
+  }
+}

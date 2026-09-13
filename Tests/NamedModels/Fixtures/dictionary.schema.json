@@ -1,0 +1,12 @@
+{
+  "$defs": {
+    "Entry": {
+      "type": "object",
+      "properties": {"code": {"type": "integer"}},
+      "required": ["code"],
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "additionalProperties": {"$ref": "#/$defs/Entry"}
+}

@@ -8,9 +8,12 @@ import Foundation
 public struct SchemaDocument: Sendable {
   public let source: String
   public let retrievalURI: URL
+  /// A portable input name used for generated model identities, not reference resolution.
+  public let logicalName: String?
 
-  public init(source: String, retrievalURI: URL) {
+  public init(source: String, retrievalURI: URL, logicalName: String? = nil) {
     self.source = source
     self.retrievalURI = retrievalURI
+    self.logicalName = logicalName
   }
 }

@@ -10,12 +10,28 @@ Use `@Schema` for inline schemas, or generate Swift from schema files with the
 command-line tool or SwiftPM build plugin.
 
 Generated components parse and validate JSON into Swift values: primitives,
-labeled tuples, arrays, and enums. They are not `Codable` models.
+labeled tuples, arrays, and enums, with opt-in named immutable models.
+Generation does not synthesize `Codable` conformance.
 
 ## Requirements
 
 Swift 6.1 or later. Supports macOS 14, iOS 17, tvOS 17, watchOS 10,
 Mac Catalyst 17, visionOS 1, and later. The CLI and generation core also support Linux.
+
+**Unreleased runtime dependency:** the new coverage in this checkout requires the
+local `swift-json-schema` changes providing `JSONComponents.Projection` and the
+related parsing fixes. Published runtime version `0.13.2` is not sufficient.
+Until an upstream version is approved and published, configure the patched
+checkout explicitly:
+
+```sh
+export JSON_SCHEMA_RUNTIME_PATH=/path/to/patched/swift-json-schema
+swift package edit swift-json-schema --path "$JSON_SCHEMA_RUNTIME_PATH"
+```
+
+The smoke scripts recognize this environment variable or the root package's
+editable `Packages/swift-json-schema` link. No unreleased dependency is downloaded
+implicitly, and the published dependency requirement has not been advanced.
 
 ## Installation
 
@@ -76,7 +92,7 @@ are supported, but variables and interpolation are not. Invalid or unsupported
 schemas produce compiler errors with a JSON Pointer to the problem, such as
 `#/properties/primaryColor/pattern`.
 
-### Output types
+### Default tuple output
 
 | Schema | Swift output |
 | --- | --- |
@@ -87,22 +103,125 @@ schemas produce compiler errors with a JSON Pointer to the problem, such as
 | `null` | `Void` |
 | Boolean schema or unconstrained `{}` | `JSONValue` |
 | Homogeneous array | `[Item.Output]` |
+| Array with `prefixItems` | `[JSONValue]`; prefix and tail constraints are validated separately |
 | Object with two or more properties | Labeled tuple in schema property order |
 | Object with one property | The property's value, unwrapped |
 | Object with no declared properties | `Void` |
 | `type: ["string", "null"]` | `String?` |
+| General `type` array | Generated typed `UnionN` enum |
+| Object with schema-valued `additionalProperties`, no named fields | `[String: Additional.Output]` |
+| Named fields plus schema-valued `additionalProperties` | `(properties: ExistingOutput, additionalProperties: [String: Additional.Output])` |
+| Recursive reference | Generated indirect `ReferenceN` enum with a `.value(Target.Output)` case |
 
 Property presence and nullability are separate. An optional nullable string is
 `String??`: `nil` means absent, and `.some(nil)` means explicitly null. A required
 nullable property must be present.
 
-Object property names must be ASCII Swift identifiers; keywords such as `class`
-are escaped automatically. Other names produce an error. Additional properties
-are validated according to the schema but are not included in the tuple.
+Object property names become collision-safe ASCII Swift labels; existing valid
+identifiers are preserved and keywords such as `class` are escaped automatically.
+Runs of punctuation or non-ASCII characters between identifier characters become
+`_`, leading and trailing such characters are dropped, leading digits gain `_`,
+and empty labels or `_` become `property`. Collisions gain `_2`, `_3`, and so on in
+property order, with existing valid identifiers reserved first. For example,
+`$id` and `id` become `id_2` and `id`. JSON keys and validation are unchanged.
+Schema-valued additional properties are included in a typed dictionary, excluding
+declared and pattern-matched names. Boolean additional-properties schemas preserve
+the existing named-field output. Pattern properties remain validation-only and
+do not add fields to the tuple. Required names without a declared property schema
+become `JSONValue` fields; they do not count as evaluated by `properties`.
 
 Call `parseAndValidate` to parse a value and enforce its schema constraints.
 `parse` alone performs typed conversion without checking every keyword.
 `format` validation follows `swift-json-schema`'s dialect and validation context.
+
+### Named models
+
+Opt into `output: .models` to expose the complete result as `Namespace.Value`:
+
+```swift
+@Schema(
+  """
+  {
+    "type": "object",
+    "properties": {
+      "name": {"type": "string"},
+      "nickname": {"type": ["string", "null"]},
+      "contact": {"type": ["string", "null"]}
+    },
+    "required": ["name", "nickname"],
+    "additionalProperties": false
+  }
+  """,
+  output: .models
+)
+public enum PersonSchema {}
+
+let person: PersonSchema.Value = try PersonSchema.schema.parseAndValidate(
+  instance: #"{"name":"Ada","nickname":null}"#
+)
+let draft = PersonSchema.Value(name: "Grace", nickname: nil)
+// draft.contact defaults to nil (absent); .some(nil) means explicitly null.
+```
+
+Object outputs are immutable `Sendable` structs with explicit initializers,
+including empty and singleton objects. Nested objects and object-valued array
+items/dictionary entries receive named models. Primitive and container roots
+use a `Value` type alias when no root nominal type is needed. Mixed objects put
+their fields directly on the model alongside a typed `additionalProperties`
+dictionary; a real field of that name keeps its label and the synthesized
+dictionary receives a collision-free suffix.
+
+Initializers construct values; they do **not** enforce schema constraints.
+Only absent-capable fields default to `nil`, so a required nullable field still
+needs an initializer argument. Models do not automatically conform to `Codable`,
+`Equatable`, or `Hashable`, and fields are not mutable.
+
+Heterogeneous unions use semantic case names when there is reliable evidence:
+an explicit override, distinct required discriminator constants, a referenced
+definition, or a JSON kind. For example, ready/pending object alternatives can
+be consumed as `.ready(payload)` and `.pending(payload)` rather than `.option1`
+and `.option2`. Equal-shaped but distinct object definitions remain distinct
+models; branches with genuinely common output still collapse. Schema validity
+and `anyOf`'s first-valid-branch order do not change.
+
+Type names come from definitions, references, properties, and container roles,
+not mutable `title`/`description` prose. Context disambiguation and stable hash
+suffixes resolve collisions. Names are scoped to one generated namespace;
+separate schema namespaces do not share model declarations.
+
+For recursion, public fields refer to models directly instead of exposing
+`ReferenceN.value` adapters. Arrays and dictionaries can hold recursive structs;
+natural semantic unions become indirect when necessary. An inline cycle such
+as `Node.next: Node?` cannot be a Swift struct. Named mode reports a located
+representation error by default; allow immutable reference models explicitly:
+
+```swift
+@Schema(
+  """
+  {
+    "type": "object",
+    "properties": {"next": {"$ref": "#"}}
+  }
+  """,
+  output: .models,
+  recursiveObjects: .immutableClasses
+)
+enum NodeSchema {}
+```
+
+This policy converts only objects in the remaining cyclic layout components
+to final immutable `Sendable` classes. Unrelated objects and collection-only
+recursive models stay structs. It changes value/reference semantics and is
+never enabled implicitly.
+
+Pure container-only recursive aliases, such as an array whose items reference
+that same array, have no nominal model boundary and cannot be expressed as a
+recursive Swift type alias. Named mode diagnoses these explicitly, including
+under the class policy; default tuple mode remains available for those schemas.
+
+The [design-token plugin example](Examples/PluginExample) uses named root values.
+The [official meta-schema example](Examples/MetaSchemaExample) demonstrates
+recursive `.object`/`.boolean` values and direct nested-schema access.
 
 ## Reusable schemas and references
 
@@ -126,6 +245,7 @@ Supported references include:
 - Document retrieval URIs and canonical `$id` aliases.
 - Nested `$id` resources, which establish new bases for relative references.
 - Static `$anchor` names, scoped to their containing resource.
+- `$dynamicAnchor` and `$dynamicRef`, including recursive dynamic scope overrides.
 - Relative and absolute references to other explicitly supplied batch documents.
 
 The macro resolves references within its literal. The CLI and plugin resolve
@@ -137,12 +257,33 @@ when no `$id` is present. An `$id` can identify an embedded schema rather than a
 file: the example's `typography-style.schema.json` resource is defined inside
 the shared design-token document.
 
-Constraints alongside `$ref` apply in addition to the referenced schema, using
-the same rules as [`allOf`](#composition). Generated schemas inline the
-referenced definitions and are self-contained.
+Constraints alongside `$ref` apply in addition to the referenced schema.
+Validation preserves conjunction boundaries and annotation scope: sibling
+`unevaluatedProperties` and `unevaluatedItems` can consume referenced annotations,
+without opening a closed object inside a referenced schema.
 
-Missing references, duplicate IDs or anchors, and recursive references produce
-errors with the source document and JSON Pointer.
+In default tuple mode, acyclic references are inlined. Recursive targets become indirect `Reference1`,
+`Reference2`, ... enums and lazy `JSONReference` components backed by local
+definitions. Unwrap `.value` to access a recursive child's typed payload.
+Dynamic references are specialized for the entry point's outer dynamic scope;
+the result is a self-contained static bundle, not a schema that can be dynamically
+retargeted by moving it into an unrelated resource after generation.
+
+Missing references, duplicate IDs or anchors, and cycles that make no instance
+progress (such as a schema containing only `{"$ref":"#"}`) produce errors with
+the source document and JSON Pointer.
+
+### Official JSON meta-schema example
+
+[Examples/MetaSchemaExample](Examples/MetaSchemaExample) builds the unmodified
+official 2020-12 meta-schema and all seven vocabulary meta-schemas with the
+build-tool plugin. The fixtures, provenance, checksums, and license are checked
+in, so reference resolution is offline. The executable validates schemas,
+rejects malformed schemas, and validates the official documents themselves.
+
+```sh
+bash Tests/MetaSchema/smoke.sh
+```
 
 ## Composition
 
@@ -213,9 +354,10 @@ typography and color schemas, composed themes, and ready/pending response enums.
 
 The adapter handles named components, not inline operation schemas or HTTP
 client generation. It accepts the OAS 3.1 base dialect and JSON Schema 2020-12
-for the [supported keywords](#supported-subset). YAML, OpenAPI 3.0, external
-documents, custom dialects, and OpenAPI-only keywords such as `discriminator`
-are not supported.
+for the [supported keywords](#json-schema-coverage-and-limits). YAML, OpenAPI 3.0, external
+documents, and custom dialects are not supported. OpenAPI-only keywords such as
+`discriminator`, and legacy `nullable`, are preserved as annotations rather than
+interpreted as validation or code-generation instructions.
 
 ## Command-line generation
 
@@ -247,6 +389,39 @@ directory beginning with `-`. The `--output-directory=Generated` form is also
 accepted. Repeating `--output-directory` uses the last value, rather than the
 previous duplicate-option error.
 
+Select named output with `--output-style models`. Use
+`--recursive-objects immutable-classes` only when reference models are acceptable.
+The defaults remain `tuples` and `value-types`.
+
+For reusable options and explicit names, pass `--config path/to/config.json`:
+
+```json
+{
+  "version": 1,
+  "output": "models",
+  "recursiveObjects": "valueTypes",
+  "typeNames": {
+    "Schemas/common.schema.json#/$defs/Typography": "Typography"
+  },
+  "caseNames": {
+    "Schemas/response.schema.json#/oneOf/0": "ready"
+  }
+}
+```
+
+Precedence is **defaults < configuration < explicitly provided flags**.
+Configuration enum values use camelCase; CLI recursion values use kebab-case.
+Unknown keys, versions, and values are errors. Relative selectors resolve from
+the configuration file's directory; absolute retrieval URIs and canonical IDs
+are also supported. Fragment-only selectors are allowed for a single emitted
+root. Use JSON Pointer escaping for literal `/` and `~` characters in keys.
+
+Type and case overrides target declarations/cases actually emitted by named
+mode. Invalid, reserved, conflicting, ambiguous, and unused names fail explicitly,
+rather than silently reverting to numbered names. The root name `Value` is fixed.
+For inline schemas, the same maps are literal `typeNames:` and `caseNames:`
+arguments to `@Schema`; the macro does not read configuration files.
+
 ## Build-tool plugin
 
 Attach the plugin to a target that links the library:
@@ -273,6 +448,18 @@ processes its schemas as one batch. Generated Swift goes into SwiftPM's
 derived-source directory. Changes to shared schemas trigger regeneration of
 dependent declarations.
 
+To opt a target into named models, place `json-schema-codegen.json` directly in
+the target directory:
+
+```json
+{"version": 1, "output": "models"}
+```
+
+The plugin tracks this file as a build input, so changing options regenerates
+the derived Swift. Add `exclude: ["json-schema-codegen.json"]` to the target to
+avoid an unhandled-file warning; the plugin still discovers the configuration.
+Configuration is target-local, not a package-wide or machine-specific setting.
+
 See [Examples/PluginExample](Examples/PluginExample) for a complete package.
 
 ## Shared core
@@ -285,6 +472,18 @@ import JSONSchemaCodegenCore
 let generated = try SchemaGenerator().generate(#"{"type":"string","minLength":1}"#)
 print(generated.expression)
 print(generated.outputType) // String
+```
+
+All core entry points accept the same options:
+
+```swift
+let generator = SchemaGenerator(
+  options: .init(output: .models, recursiveObjects: .immutableClasses)
+)
+let generated = try generator.generate(#"{"type":"object"}"#)
+print(generated.outputType) // Value
+
+let openAPI = OpenAPISchemaGenerator(options: .init(output: .models))
 ```
 
 `GeneratedSchema` provides the source expression, its output type, and any
@@ -317,39 +516,62 @@ let inputs = try ["theme.schema.json", "shared.schema.json"].map { name in
   let url = folder.appendingPathComponent(name)
   return SchemaDocument(
     source: try String(contentsOf: url, encoding: .utf8),
-    retrievalURI: url
+    retrievalURI: url,
+    logicalName: "Schemas/" + name
   )
 }
 let generated = try SchemaGenerator().generate(inputs)
 ```
 
-## Supported subset
+To emit only an entry point while making other documents available for reference
+resolution, use `generate(document, referencing: otherDocuments)`.
+For file-backed core inputs, a stable `logicalName` provides portable naming
+context without encoding a developer's checkout directory. The CLI and plugin
+provide this context automatically.
+
+## JSON Schema coverage and limits
 
 The package supports these JSON Schema 2020-12 keywords:
 
 | Area | Keywords |
 | --- | --- |
-| Types | Boolean schemas, `{}`, primitive `type`, one non-null type plus `null` |
-| Objects | `properties`, `required`, boolean `additionalProperties`, `minProperties`, `maxProperties` |
-| Arrays | Homogeneous `items`, boolean `items`, `minItems`, `maxItems`, `uniqueItems` |
+| Types | Boolean schemas, `{}`, primitive `type`, general type arrays (nullable pairs retain optional output) |
+| Objects | `properties`, `required`, schema-valued and boolean `additionalProperties`, `patternProperties`, `propertyNames`, `dependentRequired`, `dependentSchemas`, `minProperties`, `maxProperties`, `unevaluatedProperties` |
+| Arrays | `items`, `prefixItems`, `contains`, `minContains`, `maxContains`, `minItems`, `maxItems`, `uniqueItems`, `unevaluatedItems` |
 | Strings | `minLength`, `maxLength`, `pattern`, `format` |
 | Numbers | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` |
 | Values | `enum`, `const` |
-| References | `$defs`, non-recursive `$ref`, nested `$id`, static `$anchor`, offline cross-document resolution |
-| Composition | `allOf`, `anyOf`, `oneOf`, `not`, including same-output and generated-enum unions |
-| Annotations | `title`, `description`, `default`, `examples`, `readOnly`, `writeOnly`, `deprecated`, `$comment` |
-| Metadata | `$id`, `$schema` for the 2020-12 dialect |
+| References | `$defs`, `$ref`, `$dynamicRef`, nested `$id`, `$anchor`, `$dynamicAnchor`, recursive schemas, offline cross-document resolution |
+| Composition | `allOf`, `anyOf`, `oneOf`, `not`, `if`/`then`/`else`, including same-output and generated-enum unions |
+| Annotations | `title`, `description`, `default`, `examples`, `readOnly`, `writeOnly`, `deprecated`, `$comment`, `contentEncoding`, `contentMediaType`, `contentSchema`, unknown extension keywords |
+| Metadata | `$id`, `$schema` for the 2020-12 dialect, `$vocabulary` for the default dialect's seven standard vocabularies |
 
-Standalone type-specific keywords require an explicit compatible `type`;
-composition may establish the type through another branch. Standalone required
-properties must be declared in `properties`. Numeric representation follows
+Type-specific keywords constrain only applicable instances: `minLength` without
+`type` does not imply a string type, and `minimum` alongside `type: "string"`
+does not reject strings. Unconstrained projections use `JSONValue`, while retaining
+the complete validation definition. `enum` may be empty or contain duplicate
+values; an empty enum accepts no instances. Numeric representation follows
 `OrderedJSON` (`Int`/`Double`); arbitrary-precision JSON numbers are not provided.
 Defaults are annotations, not automatic value insertion.
 
-Unsupported keywords in reachable schemas produce errors. This includes dynamic
-references, tuple arrays, schema-valued additional properties, and custom
-extension keywords. Recursive schemas are not supported. Generation is limited
-to 128 levels of nesting and 10,000 emitted nodes per schema.
+Unknown extension keywords are retained as annotations without interpreting
+arbitrary nested objects as schemas. Unknown required vocabularies are explicit
+errors; unknown optional vocabularies are retained. Content keywords are
+annotations, not automatic decoding or content validation. Arrays with
+`prefixItems` intentionally expose `[JSONValue]`; the `items` schema applies only
+to the tail, never to the prefix during typed parsing.
+
+Custom `$schema` dialects and unknown required vocabularies are not implemented;
+they fail explicitly rather than silently enabling or ignoring assertions.
+References must target standard schema-bearing locations, not arbitrary
+annotation data. Generation is limited to 128 levels of nesting and 10,000
+emitted nodes per schema. Typed integer output is limited to Swift `Int` even
+when a larger mathematical integer passes schema validation.
+
+This is not a claim of unrestricted specification conformance. The
+[generated-code conformance harness](Tests/Conformance) compiles official
+2020-12 test cases and compares both validation and parsing results; unsupported
+groups remain reported failures. Optional formats depend on runtime configuration.
 
 ## Development
 
@@ -357,10 +579,16 @@ to 128 levels of nesting and 10,000 emitted nodes per schema.
 swift test
 bash Tests/CLI/smoke.sh
 bash Tests/OpenAPI/smoke.sh
+bash Tests/MetaSchema/smoke.sh
+bash Tests/NamedModels/smoke.sh
+bash Tests/NamedModels/entry-points.sh
+bash Tests/Conformance/run.sh
+bash Tests/Conformance/run.sh --compare-models --recursive-objects immutable-classes
 ```
 
 The smoke scripts generate Swift, then build and run the plugin and OpenAPI
-example consumers.
+example consumers. The conformance run also needs a local official test-suite
+checkout; see its README for setup and current coverage.
 
 ## License
 

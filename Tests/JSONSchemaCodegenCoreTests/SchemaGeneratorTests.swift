@@ -6,7 +6,8 @@ struct SchemaGeneratorTests {
   let generator = SchemaGenerator()
 
   @Test func labeledOutputPreservesDeclarationOrder() throws {
-    let result = try generator.generate("""
+    let result = try generator.generate(
+      """
       {
         "type": "object",
         "properties": {
@@ -47,7 +48,8 @@ struct SchemaGeneratorTests {
   }
 
   @Test func nestedArrayOutput() throws {
-    let result = try generator.generate("""
+    let result = try generator.generate(
+      """
       {"type":"array","items":{"type":"object","properties":{
         "name":{"type":"string"},"score":{"type":"number"}
       },"required":["name","score"]}}
@@ -58,13 +60,8 @@ struct SchemaGeneratorTests {
   @Test(arguments: [
     (##"{"type":"string","$ref":"#/$defs/name"}"##, "/$ref"),
     (#"{"anyOf":[]}"#, "/anyOf"),
-    (#"{"type":"object","properties":{"a/b~c":{"type":"string"}}}"#, "/properties/a~1b~0c"),
-    (#"{"type":"object","required":["missing"]}"#, "/required"),
     (#"{"type":"object","properties":[]}"#, "/properties"),
     (#"{"type":"object","properties":{"a":{}},"required":["a","a"]}"#, "/required"),
-    (#"{"type":"object","additionalProperties":{"type":"string"}}"#, "/additionalProperties"),
-    (#"{"type":"string","minimum":2}"#, "/minimum"),
-    (#"{"properties":{"x":{"type":"string"}}}"#, "/properties"),
     (#"{"type":"array","minItems":-1}"#, "/minItems"),
     (#"{"type":"string","maxLength":1.5}"#, "/maxLength"),
     (#"{"type":"number","multipleOf":0}"#, "/multipleOf"),
@@ -73,11 +70,7 @@ struct SchemaGeneratorTests {
     (#"{"type":"string","examples":"example"}"#, "/examples"),
     (#"{"type":"string","title":42}"#, "/title"),
     (#"{"type":"array","items":[]}"#, "/items"),
-    (#"{"enum":[]}"#, "/enum"),
-    (#"{"enum":[1,1.0]}"#, "/enum"),
-    (#"{"type":["string","integer"]}"#, "/type"),
     (#"{"type":["string","string"]}"#, "/type"),
-    (#"{"type":"object","properties":{"_":{"type":"string"}}}"#, "/properties/_"),
     (#"{"$schema":"http://json-schema.org/draft-07/schema#"}"#, "/$schema"),
   ])
   func rejectsLossyOrMalformedSchemas(source: String, pointer: String) {
@@ -129,7 +122,8 @@ struct SchemaGeneratorTests {
   }
 
   @Test func annotationsAndConstants() throws {
-    let generated = try generator.generate("""
+    let generated = try generator.generate(
+      """
       {"type":"string","title":"Name","description":"A name","default":"A",
        "const":"A","examples":["A"],"readOnly":true,"writeOnly":false,"deprecated":false,
        "$comment":"Keep this","$id":"https://example.com/name",

@@ -5,20 +5,37 @@ import JSONSchemaCodegenCore
 struct OpenAPIGenerate {
   static func main() {
     do {
-      guard CommandLine.arguments.count == 2 else {
-        throw ExampleError("Usage: openapi-generate <openapi.json>; generated Swift is written to stdout.")
+      let arguments = CommandLine.arguments
+      let output: SchemaOutputStyle
+      if arguments.count == 2 {
+        output = .tuples
+      } else if arguments.count == 4, arguments[2] == "--output-style" {
+        switch arguments[3] {
+        case "tuples": output = .tuples
+        case "models": output = .models
+        default: throw ExampleError("Output style must be tuples or models.")
+        }
+      } else {
+        throw ExampleError(
+          "Usage: openapi-generate <openapi.json> [--output-style tuples|models]; generated Swift is written to stdout."
+        )
       }
-      let url = URL(fileURLWithPath: CommandLine.arguments[1]).standardizedFileURL
+      let url = URL(fileURLWithPath: arguments[1]).standardizedFileURL
       let document = SchemaDocument(
         source: try String(contentsOf: url, encoding: .utf8),
-        retrievalURI: url
+        retrievalURI: url,
+        logicalName: url.lastPathComponent
       )
-      let components = try OpenAPISchemaGenerator().generateComponents(in: document)
+      let components = try OpenAPISchemaGenerator(options: .init(output: output))
+        .generateComponents(in: document)
       let namespaces = try components.map { component in
-        guard component.name.range(
-          of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression
-        ) != nil else {
-          throw ExampleError("This example requires ASCII Swift identifier component names: \(component.name)")
+        guard
+          component.name.range(
+            of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression
+          ) != nil
+        else {
+          throw ExampleError(
+            "This example requires ASCII Swift identifier component names: \(component.name)")
         }
         return """
           public enum \(component.name)Schema {

@@ -28,8 +28,18 @@ extension SchemaOutput {
     switch self {
     case .named(let name):
       return TypeSyntax(IdentifierTypeSyntax(name: .identifier(name)))
+    case .model(let identity):
+      return TypeSyntax(IdentifierTypeSyntax(name: .identifier(SchemaModelSyntax.symbol(identity))))
+    case .recursive(let name):
+      return TypeSyntax(
+        IdentifierTypeSyntax(name: .identifier(SchemaModelNames.helperPrefix + "Output" + name)))
     case .array(let item):
       return TypeSyntax(ArrayTypeSyntax(element: item.syntax))
+    case .dictionary(let value):
+      return TypeSyntax(
+        DictionaryTypeSyntax(
+          key: IdentifierTypeSyntax(name: "String"), value: value.syntax
+        ))
     case .optional(let wrapped):
       return TypeSyntax(OptionalTypeSyntax(wrappedType: wrapped.syntax))
     case .tuple(let fields):
@@ -293,14 +303,33 @@ enum SchemaSyntax {
     return call(ExprSyntax(closure))
   }
 
+  static func additionalPropertiesMap(_ expression: ExprSyntax, hasProperties: Bool) -> ExprSyntax {
+    let additional = member(member(reference("$0"), "1"), "matches")
+    let result: ExprSyntax
+    if hasProperties {
+      result = ExprSyntax(
+        TupleExprSyntax(elements: [
+          argument(member(reference("$0"), "0"), label: "properties")
+            .with(\.trailingComma, .commaToken()),
+          argument(additional, label: "additionalProperties"),
+        ]))
+    } else {
+      result = additional
+    }
+    return modifier(
+      expression, "map",
+      closure: ClosureExprSyntax(statements: [
+        CodeBlockItemSyntax(leadingTrivia: .newline, item: .expr(result))
+      ]))
+  }
+
   static var validationHelper: DeclSyntax {
     """
     private static func _schemaWithDefinition<Component: JSONSchemaComponent>(
       _ component: Component, _ value: SchemaValue
     ) -> JSONComponents.AnySchemaComponent<Component.Output> {
-      var schema = component.eraseToAnySchemaComponent()
-      schema.schemaValue = value
-      return schema
+      JSONComponents.Projection(upstream: component, schemaValue: value)
+        .eraseToAnySchemaComponent()
     }
     """
   }
