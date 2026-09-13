@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "empty": {"type": "string", "enum": []},
+    "nullOnly": {"type": ["string", "null"], "enum": [null]},
+    "mixed": {"type": "string", "enum": ["draft", 1]},
+    "untypedMixed": {"enum": ["draft", 1]},
+    "constant": {"type": "string", "const": "draft"},
+    "unconstrained": {"type": "string"}
+  },
+  "additionalProperties": false
+}

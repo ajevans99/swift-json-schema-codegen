@@ -167,16 +167,17 @@ let draft = PersonSchema.Value(name: "Grace", nickname: nil)
 
 Object outputs are immutable `Sendable` structs with explicit initializers,
 including empty and singleton objects. Nested objects and object-valued array
-items/dictionary entries receive named models. Primitive and container roots
-use a `Value` type alias when no root nominal type is needed. Mixed objects put
-their fields directly on the model alongside a typed `additionalProperties`
+items/dictionary entries receive named models. Unconstrained primitive and
+container roots use a `Value` type alias when no root nominal type is needed.
+Mixed objects put their fields directly on the model alongside a typed `additionalProperties`
 dictionary; a real field of that name keeps its label and the synthesized
 dictionary receives a collision-free suffix.
 
 Initializers construct values; they do **not** enforce schema constraints.
 Only absent-capable fields default to `nil`, so a required nullable field still
 needs an initializer argument. Models do not automatically conform to `Codable`,
-`Equatable`, or `Hashable`, and fields are not mutable.
+`Equatable`, or `Hashable`, and fields are not mutable. The finite string enums
+described below are an exception: they have exact equality and hashing.
 
 Heterogeneous unions use semantic case names when there is reliable evidence:
 an explicit override, distinct required discriminator constants, a referenced
@@ -224,6 +225,81 @@ under the class policy; default tuple mode remains available for those schemas.
 The [design-token plugin example](Examples/PluginExample) uses named root values.
 The [official meta-schema example](Examples/MetaSchemaExample) demonstrates
 recursive `.object`/`.boolean` values and direct nested-schema access.
+
+### Typed string enums
+
+Named output turns finite string `enum` constraints into public, payload-free
+Swift enums:
+
+```swift
+@Schema(
+  #"{"type":"string","enum":["draft","in-progress","done"]}"#,
+  output: .models
+)
+public enum StatusSchema {}
+
+let status: StatusSchema.Value = .inProgress
+let jsonString: String = status.rawValue // "in-progress"
+let restored = StatusSchema.Value(rawValue: jsonString) // .some(.inProgress)
+let unknown = StatusSchema.Value(rawValue: "unknown") // nil
+```
+
+These enums conform to `RawRepresentable` with `RawValue == String`, `Sendable`,
+and `Hashable` (including `Equatable`). They deliberately do **not** use Swift's
+synthesized `enum E: String` implementation: Swift `String` equality considers
+canonically equivalent spellings equal, while JSON compares Unicode scalars.
+Generated conversion, equality, and hashing preserve that distinction. For
+example, `"\u{e9}"` and `"e\u{301}"` receive distinct cases when both are listed;
+listing only one does not make `init(rawValue:)` accept the other. Use scalar
+or UTF-8 comparison if comparing raw strings with that same exactness.
+
+Case names use the existing ASCII lowerCamelCase allocator (`in-progress` becomes
+`inProgress`). Empty/punctuation-only names use `alternative`, leading digits
+use that prefix, keywords are escaped, and collisions receive deterministic
+FNV-based suffixes derived from the source identity and exact value bytes.
+Byte-identical duplicates share one case; duplicate entries and original order
+remain in `schemaValue`. The synthesized members `rawValue`, `RawValue`, `hash`,
+and `hashValue` are reserved. No `Codable`, JSON encoder, or `CaseIterable`
+conformance is generated.
+
+The applicability policy is deliberately bounded:
+
+- An enum must contain at least one string, with all other entries strings or
+  null. An explicit string/nullable-string type is honored; without a type the
+  finite enum supplies the string/null parsing domain.
+- Nullable strings use `Enum?`; optional nullable object fields still use
+  `Enum??`, preserving absent versus explicitly null. Enum models work as root
+  `Value`, object fields, array/dictionary entries, references, and union payloads.
+- `allOf` and reference refinements retain the first positive pure string-enum
+  bound through the existing intersection planner. They do not solve
+  satisfiability or remove cases excluded by other `enum`, `const`, pattern, or
+  conditional constraints. Construction/raw conversion checks membership in
+  this finite bound; **`parseAndValidate` enforces the complete schema**.
+- `anyOf`/`oneOf` keep their existing branch order, validity, and nominal
+  common-output rules. Applicable branches get enum payloads; an unconstrained
+  string alternative remains `String`. General `type` arrays also retain their
+  semantic union, with a typed string branch where applicable. Values from
+  alternative or conditional branches are never incorrectly treated as a
+  conjunctive bound.
+- Empty enums, null-only enums, mixed non-string enums, const-only schemas, and
+  unconstrained strings retain their previous representation. Numeric/boolean
+  enums are not introduced. Default tuple output is unchanged.
+
+Unrefined references share enum models; separate definitions remain nominally
+distinct, even with identical values. Enum-valued reference siblings specialize
+the model just like other output-shape refinements; validation-only constraints
+such as `const` and `pattern` can reuse the base enum. Type naming and recursion
+use the same model graph as objects and unions.
+
+Use `typeNames: ["#/properties/status": "Status"]` for a nested enum name and
+`caseNames: ["#/properties/status/enum/1": "working"]` for a case. Selectors address
+the original enum array indices (including duplicate entries); contradictory
+names for the same deduplicated case fail explicitly. In compositions, target
+the enum-bearing conjunct's pointer: matching values carry their original indices
+from each positive enum constraint, even when a refinement reorders the values.
+A refinement entry outside the chosen bound has no emitted case and is diagnosed.
+CLI configuration, target-local plugin configuration, and OpenAPI component
+selectors accept the same overrides.
 
 ## Reusable schemas and references
 
@@ -419,7 +495,8 @@ are also supported. Fragment-only selectors are allowed for a single emitted
 root. Use JSON Pointer escaping for literal `/` and `~` characters in keys.
 
 Type and case overrides target declarations/cases actually emitted by named
-mode. Invalid, reserved, conflicting, ambiguous, and unused names fail explicitly,
+mode. Cases can be union branches (`/oneOf/0`) or string-enum entries (`/enum/0`).
+Invalid, reserved, conflicting, ambiguous, and unused names fail explicitly,
 rather than silently reverting to numbered names. The root name `Value` is fixed.
 For inline schemas, the same maps are literal `typeNames:` and `caseNames:`
 arguments to `@Schema`; the macro does not read configuration files.

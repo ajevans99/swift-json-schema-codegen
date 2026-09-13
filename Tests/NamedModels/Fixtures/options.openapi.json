@@ -10,9 +10,10 @@
             "properties": {"number": {"type": "integer"}},
             "required": ["number"]
           },
-          "result": {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+          "result": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+          "status": {"type": "string", "enum": ["draft", "in-progress", "done"]}
         },
-        "required": ["payload", "result"]
+        "required": ["payload", "result", "status"]
       }
     }
   }

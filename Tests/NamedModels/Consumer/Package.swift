@@ -10,7 +10,8 @@ let package = Package(
   name: "NamedModelConsumer",
   platforms: [.macOS(.v14)],
   dependencies: [
-    runtime.map { .package(name: "swift-json-schema", path: $0) } ?? .package(path: root)
+    runtime.map { .package(name: "swift-json-schema", path: $0) }
+      ?? .package(name: "swift-json-schema-codegen", path: root)
   ],
   targets: [
     .target(

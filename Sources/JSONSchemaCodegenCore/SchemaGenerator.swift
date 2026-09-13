@@ -223,6 +223,7 @@ private struct SchemaEmitter {
                 "additionalProperties", "allOf", "anyOf", "oneOf",
               ].contains($0)
             }) == true
+              || SchemaParsingPlan.StringEnum.isApplicable(refinement.value.object?["enum"])
           }),
           let target = referenceDefinitions[reference]
         {
@@ -356,12 +357,16 @@ private struct SchemaEmitter {
       sibling.value = .object(object)
     }
     let parsingSibling = removingUnevaluatedKeywords(sibling)
+    let hasStringEnumSibling =
+      options.output == .models
+      && SchemaParsingPlan.StringEnum.isApplicable(sibling.value.object?["enum"])
     for index in branches.indices {
       guard let branch = node.children["\(keyword)/\(index)"] else {
         throw failure(node.location.pointer, "Missing resolved composition branch.")
       }
       if ["properties", "required", "items"].contains(where: { sibling.value.object?[$0] != nil })
         || (options.output == .models && sibling.value.object?["type"] != nil)
+        || hasStringEnumSibling
       {
         let combined = ResolvedSchema(
           value: .object(["allOf": .array([parsingSibling.value, branch.value])]),
@@ -457,7 +462,8 @@ private struct SchemaEmitter {
       outputType: outputType
     )
     if let keys = sibling.value.object?.keys,
-      keys.allSatisfy(Self.commonModifierKeywords.contains)
+      keys.allSatisfy(Self.commonModifierKeywords.contains),
+      !hasStringEnumSibling
     {
       return SchemaFragment(
         expression: try applyingCommonModifiers(to: generated.expression, from: sibling),
@@ -569,6 +575,13 @@ private struct SchemaEmitter {
         domain = domain.map { $0.intersection(types) } ?? types
       }
     }
+    let stringEnum =
+      options.output == .models
+      ? SchemaParsingPlan.StringEnum.intersectionBound(in: nodes)
+      : nil
+    if domain == nil, let stringEnum {
+      domain = stringEnum.includesNull ? ["string", "null"] : ["string"]
+    }
     guard var domain else {
       return ResolvedSchema(
         value: .object([:]), location: location.location, documentURI: location.documentURI)
@@ -599,6 +612,11 @@ private struct SchemaEmitter {
       value: .object(["type": nullable ? .array([.string(type), .string("null")]) : .string(type)]),
       location: location.location, documentURI: location.documentURI
     )
+    if type == "string", let stringEnum, var object = projection.value.object {
+      object["enum"] = .array(stringEnum.validationValues)
+      projection.value = .object(object)
+      projection.stringEnumProjection = stringEnum
+    }
     if type == "object" {
       var properties = JSONValue.object([:])
       var required: [JSONValue] = []
@@ -834,9 +852,17 @@ private struct SchemaEmitter {
     guard let object = value.object else {
       throw failure(pointer, "Expected a schema object or boolean.")
     }
-    let (type, nullable) = try schemaType(object["type"], at: child(pointer, "type"))
+    var (type, nullable) = try schemaType(object["type"], at: child(pointer, "type"))
+    let stringEnum =
+      options.output == .models
+      ? node.stringEnumProjection ?? SchemaParsingPlan.StringEnum(node) : nil
     var requiresValidationDefinition = (object["required"]?.array ?? [])
       .compactMap(\.string).contains { object["properties"]?.object?[$0] == nil }
+    if type == nil, let stringEnum {
+      type = "string"
+      nullable = stringEnum.includesNull
+      requiresValidationDefinition = true
+    }
     var expression: ExprSyntax
     var outputType: SchemaOutput
     switch type {
@@ -936,6 +962,10 @@ private struct SchemaEmitter {
     }
 
     expression = try applyingCommonModifiers(to: expression, from: node)
+    if type == "string", let stringEnum {
+      outputType = models.stringEnum(at: node, plan: stringEnum)
+      expression = SchemaModelSyntax.stringEnumMap(expression, output: outputType)
+    }
     if nullable {
       expression = SchemaSyntax.modifier(
         expression, "orNull",

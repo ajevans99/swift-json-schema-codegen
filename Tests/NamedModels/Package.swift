@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
   name: "NamedModelConsumers",
   platforms: [.macOS(.v14)],
-  dependencies: [.package(path: "../..")],
+  dependencies: [.package(name: "swift-json-schema-codegen", path: "../..")],
   targets: [
     .executableTarget(
       name: "GenerateNamedModels",

@@ -32,7 +32,7 @@ let runtime = ProcessInfo.processInfo.environment["JSON_SCHEMA_RUNTIME_PATH"]
 let package = Package(
   name: "Conformance",
   platforms: [.macOS(.v14)],
-  dependencies: [runtime.map { .package(name: "swift-json-schema", path: $0) } ?? .package(path: "../..")],
+  dependencies: [runtime.map { .package(name: "swift-json-schema", path: $0) } ?? .package(name: "swift-json-schema-codegen", path: "../..")],
   targets: [.executableTarget(
     name: "Conformance",
     dependencies: [runtime == nil

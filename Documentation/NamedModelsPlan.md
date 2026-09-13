@@ -370,7 +370,8 @@ Keep nullable pairs as optionals. General unions containing null can use a
 payload-free `.null` case rather than an awkward `Void` payload.
 
 Primitive `enum` constraints do not automatically become new raw-value Swift
-enums in this version. That is a separate representation decision.
+enums in the initial version described here. The subsequent typed-string-enum
+enhancement is recorded in section 15.
 
 ## 7. Recursion and Swift layout
 
@@ -765,7 +766,7 @@ The enhancement is ready when:
 ## 13. Non-goals and approval checkpoints
 
 Defer automatic `Codable` generation, JSON encoding, model mutation APIs,
-automatic `Equatable`/`Hashable`, new string-enum representation, arbitrary custom
+automatic object/union `Equatable`/`Hashable`, arbitrary custom
 dialects, heterogeneous prefix-array models, shared types across output
 namespaces, and user-written partial model bodies.
 
@@ -866,3 +867,88 @@ preserving the compatibility and consumer checks. The final comparison is within
 both proposed investigation thresholds for all three schema sets. These small
 samples are development observations, not general performance guarantees or
 timing-based CI assertions.
+
+## 15. Typed string-enum enhancement
+
+Named output now extends the existing graph with a finite `stringEnum` shape,
+not a second model system. `SchemaParsingPlan.StringEnum` records a positive
+enum bound, the original values/indices, and provenance. The intersection planner
+can carry that bound into a string projection; the complete validation binding
+is unchanged. `SchemaModelAllocation` uses the existing type/case allocator and
+overrides, and `SchemaStringEnumSyntax` emits declarations and fallible upstream
+`compactMap` conversion. String-enum nodes have no inline layout dependencies.
+
+### Representation and exactness
+
+Each public payload-free enum exposes `init?(rawValue: String)` and
+`rawValue: String`, with `RawRepresentable`, `Sendable`, and explicit exact
+`Equatable`/`Hashable` behavior. A synthesized `enum E: String` is unsuitable:
+Swift raw-value matching merges canonically equivalent strings, unlike JSON's
+Unicode-scalar equality. Even a manually implemented `RawRepresentable` enum
+inherits raw-value-based equality/hash defaults unless overridden. The emitter
+therefore compares scalar sequences and hashes the same scalar sequence.
+Distinct JSON strings survive parsing, case identity, sets, and raw conversion.
+
+Case IDs contain UTF-8 hex value bytes, independent of enum order and Swift's
+canonical `String` equality. Exact duplicates share a case, while all original
+enum indices remain selectors and the validation literal is left untouched.
+Entry provenance is captured before reference specialization changes the model
+identity. Intersections and enum-valued reference siblings contribute selectors
+by exact value rather than by projected-array position, so reordered/subset
+refinements cannot rename the wrong case. Entries outside the chosen bound have
+no case, and conflicting names for matching entries are diagnosed.
+ASCII case normalization, contextual type naming, collision digests, namespace
+boundaries, and explicit-name diagnostics reuse the existing contracts.
+`rawValue`, `RawValue`, `hash`, and `hashValue` are reserved case names.
+
+### Bounded applicability
+
+The source enum must have at least one string and no non-string entries except
+null. String and nullable-string parsing domains are eligible; when there is no
+type, a pure enum supplies that domain. Nullable pairs and optional fields keep
+the existing `T?`/`T??` semantics. Empty/null-only enums, other mixed-type enums,
+unconstrained strings, and standalone `const` keep their previous output.
+Numeric/boolean enums and automatic `Codable` remain out of scope.
+
+Only positive conjunctive enum evidence supplies a finite bound. Intersections
+retain the first such bound, possibly a superset of the values allowed by the
+full schema, rather than adding a satisfiability solver. A second enum, `const`,
+pattern, `not`, or conditional still validates normally. `anyOf` and `oneOf`
+retain their selection/validity rules and independently modeled payloads;
+an unconstrained alternative never gets narrowed to a neighbor's enum.
+
+References reuse nominal identity as before; adding an enum-valued sibling is
+an output-shape specialization, including when the base is an unconstrained
+string. Validation-only refinements can share the base enum. Different source
+definitions remain distinct regardless of equal values. Enum type overrides
+target the schema location and case overrides target original `/enum/<index>`
+locations, including enum-bearing `allOf` conjuncts.
+
+No public configuration option or runtime dependency change is needed: this is
+part of `.models` everywhere, on published `swift-json-schema` 0.14.0 or later.
+Tuple generation, exact-number handling, and the immutable-class recursion
+policy are unchanged.
+
+### Verification
+
+On Swift 6.4 / macOS with the published 0.14.0 runtime, the package suite passes
+43 XCTest macro tests, 161 core tests, and 99 runtime tests. Focused coverage
+includes scalar-exact conversion/equality/hashing, duplicate and escaped values,
+null presence, naming stability, nominal reuse, reference specialization,
+composition validation parity, and a recursively refined enum union.
+
+The pinned official suite at `f6fd52a0a95472e079cbfc6ef7f089702b80e045`
+still generates 382/384 groups: 1,296 unique instances / 2,592 mode checks, with
+zero schema-value or runtime mismatches. The two custom-vocabulary dialect
+groups remain explicit unsupported-generation errors and the full command
+still exits nonzero. The 33 separate named/tuple public-consumer pairs, named
+CLI/plugin entry-point checks, existing CLI/plugin smoke suite, OpenAPI smoke
+suite, and official meta-schema smoke checks also pass. The design-token
+example now uses typed mode cases and bridges namespace-local enum types through
+their exact raw-string initializer.
+This does not claim local execution on Linux or the minimum Swift 6.1 compiler;
+the package's minimum tools version and platforms are unchanged.
+
+The local consumer/example manifests give the codegen dependency an explicit
+package name, so these checks can run in an isolated worktree whose directory
+name differs from `swift-json-schema-codegen`, without touching another checkout.

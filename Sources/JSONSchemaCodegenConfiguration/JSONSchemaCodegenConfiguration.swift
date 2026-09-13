@@ -16,7 +16,9 @@ public enum RecursiveObjectStrategy: String, Codable, Equatable, Sendable {
 
 /// Exact Swift names keyed by schema-location selectors.
 public struct SchemaNameOverrides: Codable, Equatable, Sendable {
+  /// Type-bearing schema locations; the complete root retains the name `Value`.
   public var typeNames: [String: String]
+  /// Union-branch locations or original string-enum entry locations (`/enum/0`).
   public var caseNames: [String: String]
 
   public init(typeNames: [String: String] = [:], caseNames: [String: String] = [:]) {

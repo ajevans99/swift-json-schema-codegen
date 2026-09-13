@@ -30,6 +30,7 @@ struct ResolvedSchema {
   var recursiveDefinitions: [String: ResolvedSchema] = [:]
   var referenceApplication: SchemaReferenceApplication?
   var modelProvenance: SchemaModelProvenance?
+  var stringEnumProjection: SchemaParsingPlan.StringEnum?
 
   /// A self-contained validation schema, preserving conjunction boundaries.
   var validationValue: JSONValue {
@@ -412,11 +413,22 @@ final class SchemaReferenceGraph {
           "type", "properties", "required", "items", "prefixItems", "additionalProperties",
           "allOf", "anyOf", "oneOf",
         ].contains($0)
-      }) || references.count > 1 {
+      }) || SchemaParsingPlan.StringEnum.isApplicable(siblings["enum"]) || references.count > 1 {
         result.modelProvenance = origin
       } else if var provenance = result.modelProvenance {
         provenance.origins += origin.origins
         result.modelProvenance = provenance
+      }
+      if var stringEnum = result.stringEnumProjection {
+        if siblings["enum"] == nil {
+          stringEnum.addUseSite(origin)
+        } else if let siblingEnum = SchemaParsingPlan.StringEnum(
+          enumValue: siblings["enum"], provenance: origin)
+        {
+          // A sibling's enum indices address its own values, not the base bound's order.
+          stringEnum.addOrigins(from: siblingEnum)
+        }
+        result.stringEnumProjection = stringEnum
       }
     } else {
       var value = record.value
@@ -430,6 +442,7 @@ final class SchemaReferenceGraph {
         scope: scope, instanceDepth: instanceDepth
       )
       result.modelProvenance = provenance(for: resolution)
+      result.stringEnumProjection = SchemaParsingPlan.StringEnum(result)
     }
     resolved[resolution] = result
     return result

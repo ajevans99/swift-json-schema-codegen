@@ -48,7 +48,7 @@ let package = Package(
   name: "OpenAPIConsumer",
   platforms: [.macOS(.v14)],
   dependencies: [
-    runtime.map { .package(name: "swift-json-schema", path: $0) } ?? .package(path: "../../..")
+    runtime.map { .package(name: "swift-json-schema", path: $0) } ?? .package(name: "swift-json-schema-codegen", path: "../../..")
   ],
   targets: [
     .executableTarget(

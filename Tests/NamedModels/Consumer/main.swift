@@ -230,15 +230,20 @@ try reject(
   #"{"value":"root","extra":true,"children":[{"value":"leaf","children":[]}]}"#)
 
 let openAPI = try OpenAPIOptionsSchema.schema.parseAndValidate(
-  instance: #"{"payload":{"number":11},"result":12}"#)
+  instance: #"{"payload":{"number":11},"result":12,"status":"in-progress"}"#)
 let message: OpenAPIOptionsSchema.Message = openAPI.payload
 guard case .count(12) = openAPI.result else {
   throw ConsumerFailure(
     description: "OpenAPI case overrides did not preserve original component selectors.")
 }
 requireSendable(OpenAPIOptionsSchema.Outcome.text("value"))
+let lifecycle: OpenAPIOptionsSchema.Lifecycle = openAPI.status
+try check(
+  lifecycle == .working, "OpenAPI enum index override lost the original component selector.")
 try check(message.number == 11, "OpenAPI type override did not reach the nested model.")
 
+try checkStringEnums()
+
 print(
-  "Named-model consumer passed: public models, constructors, semantic unions, recursion, nullability, extras, and validation parity."
+  "Named-model consumer passed: public models, typed string enums, constructors, semantic unions, recursion, nullability, extras, and validation parity."
 )
