@@ -79,6 +79,22 @@ struct SchemaModelAllocation {
     var cases: [String: String] = [:]
     owners = [:]
     for id in graph.definitions.keys.sorted() {
+      if case .stringEnum(let values) = graph.definitions[id]!.shape {
+        let requests = try values.map { value in
+          SchemaModelNameRequest(
+            id: value.id, preferredName: value.rawValue,
+            explicitName: try override(
+              options.names.caseNames, for: value.id,
+              provenance: value.provenance, used: &usedCases),
+            pointer: value.provenance.origins[0].pointer,
+            documentURI: value.provenance.origins[0].documentURI)
+        }
+        cases.merge(
+          try SchemaModelNames.caseNames(
+            for: requests, reserved: ["rawValue", "RawValue", "hash", "hashValue"])
+        ) { first, _ in first }
+        continue
+      }
       guard case .union(let branches) = graph.definitions[id]!.shape else { continue }
       let requests: [SchemaModelNameRequest] = try branches.map { branch in
         var preferred = branch.preferredName

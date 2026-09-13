@@ -179,6 +179,8 @@ enum SchemaModelSyntax {
                             ]))
                       ]))
                   })))))
+      case .stringEnum(let values):
+        declarations.append(stringEnumDeclaration(name: name, values: values, cases: cases))
       }
     }
     if case .model(let id) = try graph.resolving(graph.root), names[id] == "Value" {

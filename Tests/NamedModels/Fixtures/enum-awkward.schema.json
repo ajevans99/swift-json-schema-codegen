@@ -1,0 +1,8 @@
+{
+  "type": "string",
+  "enum": [
+    "repeat", "repeat", "", "---", "1st", "class", "self", "Self", "init", "deinit",
+    "Type", "Protocol", "rawValue", "RawValue", "hash", "hashValue", "a-b", "a_b",
+    "a b", "a\"b", "line\nbreak", "slash\\path", "\ud83d\udcab"
+  ]
+}

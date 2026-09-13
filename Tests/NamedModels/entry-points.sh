@@ -35,7 +35,7 @@ grep -Fq 'value-types' "$work/help"
 grep -Fq 'immutable-classes' "$work/help"
 mkdir "$work/inputs"
 cat >"$work/inputs/theme.schema.json" <<'JSON'
-{"type":"object","properties":{"payload":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"choice":{"oneOf":[{"type":"string"},{"type":"integer"}]}},"required":["payload","choice"]}
+{"type":"object","properties":{"payload":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},"choice":{"oneOf":[{"type":"string"},{"type":"integer"}]},"status":{"type":"string","enum":["draft","in-progress","done"]}},"required":["payload","choice","status"]}
 JSON
 printf '%s\n' '{"type":"string"}' >"$work/inputs/other.schema.json"
 
@@ -105,7 +105,7 @@ printf '%s\n' '{"version":1,"output":"models"}' >"$config"
 
 # Config-relative, document-qualified selectors remain independent of the invocation directory.
 cat >"$config" <<'JSON'
-{"version":1,"output":"models","typeNames":{"inputs/theme.schema.json#/properties/payload":"Message","inputs/theme.schema.json#/properties/choice":"Choice"},"caseNames":{"inputs/theme.schema.json#/properties/choice/oneOf/0":"text"}}
+{"version":1,"output":"models","typeNames":{"inputs/theme.schema.json#/properties/payload":"Message","inputs/theme.schema.json#/properties/choice":"Choice","inputs/theme.schema.json#/properties/status":"Lifecycle"},"caseNames":{"inputs/theme.schema.json#/properties/choice/oneOf/0":"text","inputs/theme.schema.json#/properties/status/enum/1":"working"}}
 JSON
 "$cli" --config "$config" --output-directory "$work/named" \
   "$work/inputs/theme.schema.json"
@@ -123,22 +123,30 @@ grep -Fq "$config: #" "$work/stderr"
 
 # Compile an actual external consumer of the CLI-selected public model names.
 consumer="$work/Consumer"
-mkdir -p "$consumer/Sources/Consumer" "$consumer/Sources/NoSchemas"
-cp "$work/named/ThemeSchema.generated.swift" "$consumer/Sources/Consumer/"
+mkdir -p "$consumer/Sources/Consumer" "$consumer/Sources/NoSchemas" \
+  "$consumer/Sources/GeneratedCLI" "$consumer/Sources/PluginModels"
+cp "$work/named/ThemeSchema.generated.swift" "$consumer/Sources/GeneratedCLI/"
+sed 's/ThemeSchema/ThemeSchemaTuples/g' "$work/tuples/ThemeSchema.generated.swift" \
+  >"$consumer/Sources/GeneratedCLI/ThemeSchemaTuples.generated.swift"
 cat >"$consumer/Package.swift" <<SWIFT
 // swift-tools-version: 6.1
 import PackageDescription
 let package = Package(
   name: "NamedEntryPointConsumer",
   platforms: [.macOS(.v14)],
-  dependencies: [.package(path: "$root")],
+  dependencies: [.package(name: "swift-json-schema-codegen", path: "$root")],
   targets: [
-    .executableTarget(
-      name: "Consumer",
+    .target(
+      name: "GeneratedCLI",
+      dependencies: [.product(name: "JSONSchemaCodegen", package: "swift-json-schema-codegen")]
+    ),
+    .target(
+      name: "PluginModels",
       dependencies: [.product(name: "JSONSchemaCodegen", package: "swift-json-schema-codegen")],
       exclude: ["json-schema-codegen.json", "plugin.schema.json"],
       plugins: [.plugin(name: "JSONSchemaCodegenPlugin", package: "swift-json-schema-codegen")]
     ),
+    .executableTarget(name: "Consumer", dependencies: ["GeneratedCLI", "PluginModels"]),
     .executableTarget(
       name: "NoSchemas",
       exclude: ["json-schema-codegen.json"],
@@ -147,9 +155,11 @@ let package = Package(
   ]
 )
 SWIFT
-printf '%s\n' '{"version":1,"output":"models"}' \
-  >"$consumer/Sources/Consumer/json-schema-codegen.json"
-printf '%s\n' '{"type":"string"}' >"$consumer/Sources/Consumer/plugin.schema.json"
+plugin_config='{"version":1,"output":"models","typeNames":{"#/properties/status":"Stage"},"caseNames":{"#/properties/status/enum/1":"active"}}'
+printf '%s\n' "$plugin_config" >"$consumer/Sources/PluginModels/json-schema-codegen.json"
+printf '%s\n' '{"type":"object","properties":{"status":{"type":"string","enum":["queued","in-progress","done"]}},"required":["status"]}' \
+  >"$consumer/Sources/PluginModels/plugin.schema.json"
+printf '%s\n' 'import JSONSchemaCodegen' >"$consumer/Sources/PluginModels/PluginModels.swift"
 printf '%s\n' '{"version":1,"output":"models"}' \
   >"$consumer/Sources/NoSchemas/json-schema-codegen.json"
 printf '%s\n' 'print("Configuration-only target passed.")' >"$consumer/Sources/NoSchemas/main.swift"
@@ -157,17 +167,63 @@ printf '%s\n' 'print("Configuration-only target passed.")' >"$consumer/Sources/N
 printf '%s\n' '{"version":999}' >"$consumer/json-schema-codegen.json"
 cat >"$consumer/Sources/Consumer/main.swift" <<'SWIFT'
 import JSONSchemaCodegen
+import GeneratedCLI
+import PluginModels
 
-let pluginValue: PluginSchema.Value = try PluginSchema.schema.parseAndValidate(instance: #""plugin""#)
-precondition(pluginValue == "plugin")
+func requirePublicEnum<T: RawRepresentable & Hashable & Sendable>(_ value: T)
+where T.RawValue == String {
+  precondition(T(rawValue: value.rawValue) == value)
+}
+
+let pluginValue: PluginSchema.Value = try PluginSchema.schema.parseAndValidate(
+  instance: #"{"status":"in-progress"}"#)
+let stage: PluginSchema.Stage = pluginValue.status
+precondition(stage == .active)
+precondition(Array(stage.rawValue.unicodeScalars) == Array("in-progress".unicodeScalars))
+requirePublicEnum(stage)
+let builtPlugin = PluginSchema.Value(status: .queued)
+precondition(builtPlugin.status == .queued)
 let message = ThemeSchema.Message(text: "hello")
-let constructed = ThemeSchema.Value(payload: message, choice: .text("choice"))
+let constructed = ThemeSchema.Value(payload: message, choice: .text("choice"), status: .working)
 precondition(constructed.payload.text == "hello")
 let parsed: ThemeSchema.Value = try ThemeSchema.schema.parseAndValidate(
-  instance: #"{"payload":{"text":"parsed"},"choice":"yes"}"#
+  instance: #"{"payload":{"text":"parsed"},"choice":"yes","status":"in-progress"}"#
 )
 precondition(parsed.payload.text == "parsed")
 guard case .text("yes") = parsed.choice else { fatalError("Wrong named case") }
+let lifecycle: ThemeSchema.Lifecycle = parsed.status
+precondition(lifecycle == .working)
+requirePublicEnum(lifecycle)
+precondition(ThemeSchema.Lifecycle(rawValue: "missing") == nil)
+precondition(ThemeSchema.schema.schemaValue == ThemeSchemaTuples.schema.schemaValue)
+for raw in ["draft", "in-progress", "done"] {
+  let source = #"{"payload":{"text":"parsed"},"choice":"yes","status":""# + raw + #""}"#
+  let models = try ThemeSchema.schema.parseAndValidate(instance: source)
+  let tuples = try ThemeSchemaTuples.schema.parseAndValidate(instance: source)
+  let legacy: String = tuples.status
+  precondition(Array(models.status.rawValue.unicodeScalars) == Array(legacy.unicodeScalars))
+}
+// Swift 6.3.3 crashes in SILGenCleanup for redundant typed-throws `catch is` patterns.
+for source in [
+  #"{"payload":{"text":"parsed"},"choice":"yes","status":"missing"}"#,
+  #"{"payload":{"text":"parsed"},"choice":"yes","status":null}"#,
+] {
+  let value = try JSONValue.parse(source)
+  precondition(!ThemeSchema.schema.definition().validate(value).isValid)
+  precondition(!ThemeSchemaTuples.schema.definition().validate(value).isValid)
+  do {
+    _ = try ThemeSchema.schema.parseAndValidate(value)
+    fatalError("Named CLI enum accepted invalid input")
+  } catch {
+    let _: ParseAndValidateIssue = error
+  }
+  do {
+    _ = try ThemeSchemaTuples.schema.parseAndValidate(value)
+    fatalError("Tuple CLI enum accepted invalid input")
+  } catch {
+    let _: ParseAndValidateIssue = error
+  }
+}
 print("Compiled CLI model names passed.")
 SWIFT
 use_runtime_checkout "$consumer" >"$work/runtime.log" 2>&1 ||
@@ -179,15 +235,14 @@ grep -Fq 'Compiled CLI model names passed.' "$work/consumer.log"
 
 # Editing the tracked target-local config regenerates the same source filename.
 printf '%s\n' '{"version":1,"output":"tuples"}' \
-  >"$consumer/Sources/Consumer/json-schema-codegen.json"
+  >"$consumer/Sources/PluginModels/json-schema-codegen.json"
 if swift build --package-path "$consumer" --scratch-path "$root/.build/named-entry-consumer" \
   --product Consumer >"$work/plugin-tuples.log" 2>&1; then
   fail "Plugin did not invalidate model output after changing config to tuples"
 fi
 grep -Fq 'Value' "$work/plugin-tuples.log" ||
   { cat "$work/plugin-tuples.log" >&2; fail "Expected missing model Value after mode switch"; }
-printf '%s\n' '{"version":1,"output":"models"}' \
-  >"$consumer/Sources/Consumer/json-schema-codegen.json"
+printf '%s\n' "$plugin_config" >"$consumer/Sources/PluginModels/json-schema-codegen.json"
 swift run --package-path "$consumer" --scratch-path "$root/.build/named-entry-consumer" Consumer \
   >"$work/plugin-models.log" 2>&1 ||
   { cat "$work/plugin-models.log" >&2; fail "Plugin mode restoration"; }

@@ -1,0 +1,20 @@
+{
+  "$defs": {
+    "State": {"type": "string", "enum": ["draft", "in-progress", "done"]},
+    "Twin": {"type": "string", "enum": ["draft", "in-progress", "done"]},
+    "NullableState": {"type": ["string", "null"], "enum": ["draft", "done", null]}
+  },
+  "type": "object",
+  "properties": {
+    "status": {"$ref": "#/$defs/State"},
+    "reused": {"$ref": "#/$defs/State"},
+    "distinct": {"$ref": "#/$defs/Twin"},
+    "nullable": {"$ref": "#/$defs/NullableState"},
+    "optionalState": {"$ref": "#/$defs/State"},
+    "optionalNullable": {"$ref": "#/$defs/NullableState"},
+    "states": {"type": "array", "items": {"$ref": "#/$defs/State"}},
+    "byName": {"type": "object", "additionalProperties": {"$ref": "#/$defs/State"}}
+  },
+  "required": ["status", "reused", "distinct", "nullable", "states", "byName"],
+  "additionalProperties": {"$ref": "#/$defs/State"}
+}

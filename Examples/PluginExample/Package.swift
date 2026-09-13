@@ -6,7 +6,7 @@ let package = Package(
   name: "PluginExample",
   platforms: [.macOS(.v14)],
   dependencies: [
-    .package(path: "../..")
+    .package(name: "swift-json-schema-codegen", path: "../..")
   ],
   targets: [
     .executableTarget(

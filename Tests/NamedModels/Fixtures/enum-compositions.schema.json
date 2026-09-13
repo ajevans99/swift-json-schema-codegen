@@ -1,0 +1,30 @@
+{
+  "$defs": {
+    "State": {"type": "string", "enum": ["draft", "in-progress", "done"]}
+  },
+  "type": "object",
+  "properties": {
+    "intersection": {
+      "allOf": [
+        {"type": "string", "enum": ["draft", "in-progress", "done"]},
+        {"enum": ["done"]}
+      ]
+    },
+    "refined": {"$ref": "#/$defs/State", "enum": ["done"]},
+    "constant": {"$ref": "#/$defs/State", "const": "draft"},
+    "patterned": {"$ref": "#/$defs/State", "pattern": "^d"},
+    "either": {
+      "anyOf": [
+        {"type": "string", "enum": ["shared", "left-only"]},
+        {"type": "string", "enum": ["shared", "right-only"]}
+      ]
+    },
+    "exclusive": {
+      "oneOf": [
+        {"type": "string", "enum": ["shared", "left-only"]},
+        {"type": "string", "enum": ["shared", "right-only"]}
+      ]
+    }
+  },
+  "additionalProperties": false
+}

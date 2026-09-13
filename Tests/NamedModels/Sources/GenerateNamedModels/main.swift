@@ -57,6 +57,44 @@ func generateModels() throws {
     .init(file: "mutual", namespace: "MutualSchema", requiresClasses: true),
     .init(file: "recursive-union", namespace: "RecursiveUnionSchema"),
     .init(file: "dynamic-tree", namespace: "DynamicTreeSchema"),
+    .init(file: "enum-status", namespace: "StatusSchema"),
+    .init(file: "enum-inferred", namespace: "InferredEnumSchema"),
+    .init(file: "enum-nullable", namespace: "NullableEnumSchema"),
+    .init(file: "enum-inferred-nullable", namespace: "InferredNullableEnumSchema"),
+    .init(file: "enum-unicode", namespace: "UnicodeEnumSchema"),
+    .init(
+      file: "enum-awkward", namespace: "AwkwardEnumSchema",
+      names: .init(caseNames: ["#/enum/0": "repeated", "#/enum/1": "repeated"])),
+    .init(
+      file: "enum-container", namespace: "EnumContainerSchema",
+      names: .init(typeNames: [
+        "#/$defs/State": "State",
+        "#/$defs/Twin": "Twin",
+        "#/$defs/NullableState": "NullableState",
+      ])),
+    .init(
+      file: "enum-compositions", namespace: "EnumCompositionsSchema",
+      names: .init(
+        typeNames: [
+          "#/$defs/State": "State",
+          "#/properties/intersection": "Intersection",
+          "#/properties/refined": "Refined",
+          "#/properties/either": "Either",
+          "#/properties/either/anyOf/0": "EitherLeft",
+          "#/properties/either/anyOf/1": "EitherRight",
+          "#/properties/exclusive": "Exclusive",
+          "#/properties/exclusive/oneOf/0": "ExclusiveLeft",
+          "#/properties/exclusive/oneOf/1": "ExclusiveRight",
+        ],
+        caseNames: [
+          "#/properties/intersection/allOf/1/enum/0": "finished",
+          "#/properties/refined/enum/0": "completed",
+          "#/properties/either/anyOf/0": "left",
+          "#/properties/either/anyOf/1": "right",
+          "#/properties/exclusive/oneOf/0": "left",
+          "#/properties/exclusive/oneOf/1": "right",
+        ])),
+    .init(file: "enum-legacy", namespace: "LegacyEnumSchema"),
   ]
   try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
@@ -148,10 +186,12 @@ func generateModels() throws {
       typeNames: [
         "#/components/schemas/Envelope/properties/payload": "Message",
         "#/components/schemas/Envelope/properties/result": "Outcome",
+        "#/components/schemas/Envelope/properties/status": "Lifecycle",
       ],
       caseNames: [
         "#/components/schemas/Envelope/properties/result/oneOf/0": "text",
         "#/components/schemas/Envelope/properties/result/oneOf/1": "count",
+        "#/components/schemas/Envelope/properties/status/enum/1": "working",
       ])
     for (index, options) in [
       SchemaGenerationOptions(output: .models, names: names), .init(),
@@ -190,6 +230,22 @@ func generateModels() throws {
     else {
       throw HarnessError(
         description: "Namespace collision produced an unrelated diagnostic: \(issue)")
+    }
+    for reserved in ["rawValue", "RawValue", "hash", "hashValue"] {
+      do {
+        _ = try SchemaGenerator(
+          options: .init(output: .models, names: .init(caseNames: ["#/enum/0": reserved]))
+        ).generate(#"{"type":"string","enum":["draft"]}"#)
+        throw HarnessError(description: "Enum case override accepted reserved member \(reserved).")
+      } catch let issue as SchemaGenerationError {
+        guard issue.pointer == "/enum/0",
+          issue.message.lowercased().contains("reserved")
+            || issue.message.lowercased().contains("collid")
+        else {
+          throw HarnessError(
+            description: "Reserved enum member produced an unrelated error: \(issue)")
+        }
+      }
     }
   }
   try """

@@ -9,7 +9,7 @@ let package = Package(
     .executable(name: "openapi-generate", targets: ["OpenAPIGenerate"])
   ],
   dependencies: [
-    .package(path: "../..")
+    .package(name: "swift-json-schema-codegen", path: "../..")
   ],
   targets: [
     .executableTarget(

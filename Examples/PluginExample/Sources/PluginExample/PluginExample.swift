@@ -9,7 +9,7 @@ enum PluginExample {
     guard theme.name == "Midnight", theme.dark else {
       throw ExampleFailure("Theme fixture did not round-trip expected values.")
     }
-    guard theme.mode == "dark" else {
+    guard theme.mode == .dark else {
       throw ExampleFailure("Theme mode should resolve through the local anchor.")
     }
     guard theme.colors.background.base == "#101828",
@@ -35,7 +35,12 @@ enum PluginExample {
     let settings: AppSettingsSchema.Value = try AppSettingsSchema.schema.parseAndValidate(
       instance: fixture("Valid/app-settings.json")
     )
-    guard settings.themeName == theme.name, settings.preferredMode == theme.mode else {
+    // Each generated namespace owns its enum; bridge through the public raw-value initializer.
+    guard let preferredThemeMode = ThemeSchema.ThemeMode(rawValue: settings.preferredMode.rawValue),
+      settings.themeName == theme.name, preferredThemeMode == theme.mode,
+      settings.preferredMode.rawValue.unicodeScalars.map(\.value)
+        == theme.mode.rawValue.unicodeScalars.map(\.value)
+    else {
       throw ExampleFailure("Settings should reuse shared theme naming and mode definitions.")
     }
     guard settings.notifications.mentionsOnly, settings.layout.gutter == 24 else {
@@ -70,7 +75,7 @@ enum PluginExample {
 
     print("Plugin example passed: \(theme.name), dark=\(theme.dark), score=\(score)")
     print(
-      "Plugin shared refs passed: mode=\(settings.preferredMode), body=\(settings.bodyStyle.fontFamily), accents=\(settings.recentAccentColors.count)"
+      "Plugin shared refs passed: mode=\(settings.preferredMode.rawValue), body=\(settings.bodyStyle.fontFamily), accents=\(settings.recentAccentColors.count)"
     )
   }
 

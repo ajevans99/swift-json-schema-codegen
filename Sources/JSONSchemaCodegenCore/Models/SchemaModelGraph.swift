@@ -30,9 +30,16 @@ struct SchemaModelGraph {
     let hasDiscriminator: Bool
   }
 
+  struct StringCase {
+    let id: String
+    let rawValue: String
+    let provenance: SchemaModelProvenance
+  }
+
   enum Shape {
     case object([Field])
     case union([Branch])
+    case stringEnum([StringCase])
   }
 
   struct Definition {
@@ -88,7 +95,9 @@ struct SchemaModelGraph {
       })
   }
 
-  static func naming(_ provenance: SchemaModelProvenance, object: Bool) -> (String, [String]) {
+  static func naming(
+    _ provenance: SchemaModelProvenance, object: Bool, fallback: String = "Alternative"
+  ) -> (String, [String]) {
     let origin = provenance.origins[0]
     let tokens = tokens(origin.pointer)
     let structure = Set([
@@ -106,7 +115,7 @@ struct SchemaModelGraph {
       return ((context.last ?? "") + "Entry", Array(context.dropLast()) + [origin.logicalDocument])
     }
     return (
-      object ? "ObjectValue" : context.last ?? "Alternative", context + [origin.logicalDocument]
+      object ? "ObjectValue" : context.last ?? fallback, context + [origin.logicalDocument]
     )
   }
 
@@ -120,6 +129,25 @@ struct SchemaModelGraph {
       Definition(
         id: id, shape: .object(fields), provenance: provenance,
         preferredName: name, context: context))
+    return .model(id)
+  }
+
+  mutating func stringEnum(
+    at node: ResolvedSchema, plan: SchemaParsingPlan.StringEnum
+  ) -> SchemaOutput {
+    let provenance = Self.provenance(node)
+    let id = provenance.identity + "|stringEnum"
+    let (preferred, context) = Self.naming(provenance, object: false, fallback: "StringValue")
+    let cases = plan.values.map { value in
+      let caseID = id + "|value:" + value.rawValue.utf8.map { String(format: "%02x", $0) }.joined()
+      return StringCase(
+        id: caseID, rawValue: value.rawValue,
+        provenance: .init(identity: caseID, origins: value.origins))
+    }
+    insert(
+      Definition(
+        id: id, shape: .stringEnum(cases), provenance: provenance,
+        preferredName: preferred, context: context))
     return .model(id)
   }
 
@@ -160,6 +188,22 @@ struct SchemaModelGraph {
   private mutating func insert(_ definition: Definition) {
     if var existing = definitions[definition.id] {
       existing.provenance.origins += definition.provenance.origins
+      if case .stringEnum(let oldCases) = existing.shape,
+        case .stringEnum(let newCases) = definition.shape
+      {
+        // Repeated references contribute use-site case selectors as well as type selectors.
+        existing = Definition(
+          id: existing.id,
+          shape: .stringEnum(
+            oldCases.map { old in
+              var provenance = old.provenance
+              provenance.origins +=
+                newCases.first(where: { $0.id == old.id })?.provenance.origins ?? []
+              return StringCase(id: old.id, rawValue: old.rawValue, provenance: provenance)
+            }),
+          provenance: existing.provenance, preferredName: existing.preferredName,
+          context: existing.context)
+      }
       definitions[definition.id] = existing
     } else {
       definitions[definition.id] = definition

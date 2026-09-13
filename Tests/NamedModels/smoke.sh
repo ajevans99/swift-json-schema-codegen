@@ -12,6 +12,7 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/Sources/GeneratedModels" "$work/Sources/NamedModelConsumer"
 cp "$root/Tests/NamedModels/Consumer/Package.swift" "$work/Package.swift"
 cp "$root/Tests/NamedModels/Consumer/main.swift" "$work/Sources/NamedModelConsumer/main.swift"
+cp "$root/Tests/NamedModels/Consumer/StringEnums.swift" "$work/Sources/NamedModelConsumer/"
 
 swift run --package-path "$root/Tests/NamedModels" GenerateNamedModels \
   "$work/Sources/GeneratedModels"

@@ -48,6 +48,20 @@ final class NamedModelMacroTests: XCTestCase {
     XCTAssertFalse(text.contains("@unchecked Sendable"))
   }
 
+  func testPublicStringEnumsAndCaseOverrides() {
+    let text = expand(
+      ##"""
+      @Schema(#"{"type":"object","properties":{"status":{"type":"string","enum":["draft","in-progress"]}}}"#, output: .models, typeNames: ["#/properties/status": "State"], caseNames: ["#/properties/status/enum/1": "working"])
+      """##)
+    XCTAssertTrue(text.contains("public enum State: Swift.RawRepresentable"))
+    XCTAssertTrue(text.contains("case draft"))
+    XCTAssertTrue(text.contains("case working"))
+    XCTAssertTrue(text.contains("public var rawValue: Swift.String"))
+    XCTAssertTrue(text.contains("public init?(rawValue: Swift.String)"))
+    XCTAssertTrue(text.contains(".compactMap"))
+    XCTAssertFalse(text.contains("Codable"))
+  }
+
   func testExplicitLegacyOptionsDoNotChangeExpansion() {
     XCTAssertEqual(
       expand(#"@Schema("{\"type\":\"string\"}")"#),

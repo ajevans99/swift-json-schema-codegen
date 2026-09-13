@@ -19,6 +19,7 @@ struct SchemaModelLayout {
       switch definition.shape {
       case .object(let fields): types = fields.map(\.type)
       case .union(let branches): types = branches.map(\.type)
+      case .stringEnum: types = []
       }
       edges[id] = try types.reduce(into: Set<String>()) {
         $0.formUnion(try dependencies($1))

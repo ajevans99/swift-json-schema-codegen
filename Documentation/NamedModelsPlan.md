@@ -39,14 +39,17 @@ The working checkout already resolves recursive/dynamic references and separates
 complete validation schemas from typed parsing projections. That is a useful
 foundation, but the current planning and emission stages are intertwined.
 
+The responsibilities below describe the named-model design baseline; source
+paths follow the current Core directory layout.
+
 | Current location | Current responsibility | Planned evolution |
 | --- | --- | --- |
-| `Sources/JSONSchemaCodegenCore/SchemaReferenceGraph.swift` | Resolves references; builds finite recursive definitions; preserves validation scope | Retain behavior and expose stable provenance/specialization identity for model planning |
-| `Sources/JSONSchemaCodegenCore/SchemaGenerator.swift` | Checks schemas, plans intersections/unions/objects, and emits expressions | Extract a shared semantic parsing plan; select tuple or named-model emission afterward |
-| `Sources/JSONSchemaCodegenCore/SchemaOutput.swift` | Describes named types, containers, optionals, and tuples | Distinguish built-in types from references to generated model identities |
-| `Sources/JSONSchemaCodegenCore/SchemaSyntax.swift` | Builds types, tuple maps, unions, and validation helpers | Add structured model declarations and constructor maps |
-| `Sources/JSONSchemaCodegenCore/RecursiveSchemaSyntax.swift` | Emits public `ReferenceN` wrappers and lazy factories | Keep the legacy path; add private adapters whose outputs map to public models |
-| `Sources/JSONSchemaCodegenCore/SchemaPropertyNames.swift` | Maps arbitrary JSON keys to collision-safe Swift labels | Preserve this field-label contract; add separate type/case naming rules |
+| `Sources/JSONSchemaCodegenCore/Planning/SchemaReferenceGraph.swift` | Resolves references; builds finite recursive definitions; preserves validation scope | Retain behavior and expose stable provenance/specialization identity for model planning |
+| `Sources/JSONSchemaCodegenCore/Planning/SchemaEmitter.swift` | Checks schemas, plans intersections/unions/objects, and emits expressions | Extract a shared semantic parsing plan; select tuple or named-model emission afterward |
+| `Sources/JSONSchemaCodegenCore/Models/SchemaOutput.swift` | Describes named types, containers, optionals, and tuples | Distinguish built-in types from references to generated model identities |
+| `Sources/JSONSchemaCodegenCore/Syntax/SchemaSyntax.swift` | Builds types, tuple maps, unions, and validation helpers | Add structured model declarations and constructor maps |
+| `Sources/JSONSchemaCodegenCore/Syntax/RecursiveSchemaSyntax.swift` | Emits public `ReferenceN` wrappers and lazy factories | Keep the legacy path; add private adapters whose outputs map to public models |
+| `Sources/JSONSchemaCodegenCore/Naming/SchemaPropertyNames.swift` | Maps arbitrary JSON keys to collision-safe Swift labels | Preserve this field-label contract; add separate type/case naming rules |
 | `Sources/JSONSchemaCodegenMacros/SchemaMacro.swift` | Accepts exactly one literal and emits namespace members | Parse literal representation/naming options and pass namespace context |
 | CLI, plugin, and OpenAPI adapter | Select roots, generate namespaces, and manage files | Pass the same validated configuration to the core |
 
@@ -370,7 +373,8 @@ Keep nullable pairs as optionals. General unions containing null can use a
 payload-free `.null` case rather than an awkward `Void` payload.
 
 Primitive `enum` constraints do not automatically become new raw-value Swift
-enums in this version. That is a separate representation decision.
+enums in the initial version described here. The subsequent typed-string-enum
+enhancement is recorded in section 15.
 
 ## 7. Recursion and Swift layout
 
@@ -657,20 +661,32 @@ Do not document partially supported `.models` behavior as complete between
 phases. During development, unsupported named shapes must fail explicitly rather
 than quietly returning legacy tuple APIs.
 
-### Expected file organization
+### File organization
 
-Prefer small internal files over further growth of `SchemaGenerator.swift`:
+Core's public entry points remain at `Sources/JSONSchemaCodegenCore/`:
+`SchemaGenerator.swift`, `SchemaDocument.swift`, `OpenAPISchemaGenerator.swift`,
+and the `JSONSchemaCodegenCore.swift` configuration re-export.
 
-- `Sources/JSONSchemaCodegenConfiguration/` for public option value types.
-- `SchemaParsingPlan.swift` for shared semantic parsing operations.
-- `SchemaModelGraph.swift` for model identities and definitions.
-- `SchemaModelNames.swift` for type/case symbol allocation.
-- `SchemaModelLayout.swift` for recursion and storage decisions.
-- `SchemaModelSyntax.swift` for model declarations and constructor maps.
-- A focused CLI configuration decoder, reusing the shared option contract.
+Internal files are grouped in the same target:
 
-The exact file split can follow implementation needs. Do not introduce an
-external graph, inflection, or naming dependency for this feature.
+- `Planning/` contains `SchemaReferenceGraph.swift`, `SchemaParsingPlan.swift`,
+  `SchemaKeywords.swift`, and the extracted `SchemaEmitter.swift` coordinator.
+- `Models/` contains `SchemaOutput.swift`, `SchemaModelGraph.swift`,
+  `SchemaModelAllocation.swift`, and `SchemaModelLayout.swift`.
+- `Naming/` contains `SchemaModelNames.swift`, `SchemaModelNameRequest.swift`,
+  and `SchemaPropertyNames.swift`.
+- `Syntax/` contains `SchemaSyntax.swift`, `RecursiveSchemaSyntax.swift`,
+  `SchemaModelSyntax.swift`, and `SchemaStringEnumSyntax.swift`.
+
+`SchemaEmitter` is internal so the public generator facade can construct and
+invoke it; its planning helpers and mutable generation state remain private,
+apart from read-only access to the consumed naming overrides. The folders are
+organizational boundaries, not separate modules or a newly decoupled pipeline.
+SwiftPM discovers their sources without an explicit source list.
+
+Public option value types remain in `Sources/JSONSchemaCodegenConfiguration/`,
+shared by the core and CLI configuration decoder. No additional graph,
+inflection, or naming dependency is needed.
 
 ## 12. Test strategy and acceptance criteria
 
@@ -765,7 +781,7 @@ The enhancement is ready when:
 ## 13. Non-goals and approval checkpoints
 
 Defer automatic `Codable` generation, JSON encoding, model mutation APIs,
-automatic `Equatable`/`Hashable`, new string-enum representation, arbitrary custom
+automatic object/union `Equatable`/`Hashable`, arbitrary custom
 dialects, heterogeneous prefix-array models, shared types across output
 namespaces, and user-written partial model bodies.
 
@@ -866,3 +882,88 @@ preserving the compatibility and consumer checks. The final comparison is within
 both proposed investigation thresholds for all three schema sets. These small
 samples are development observations, not general performance guarantees or
 timing-based CI assertions.
+
+## 15. Typed string-enum enhancement
+
+Named output now extends the existing graph with a finite `stringEnum` shape,
+not a second model system. `SchemaParsingPlan.StringEnum` records a positive
+enum bound, the original values/indices, and provenance. The intersection planner
+can carry that bound into a string projection; the complete validation binding
+is unchanged. `SchemaModelAllocation` uses the existing type/case allocator and
+overrides, and `SchemaStringEnumSyntax` emits declarations and fallible upstream
+`compactMap` conversion. String-enum nodes have no inline layout dependencies.
+
+### Representation and exactness
+
+Each public payload-free enum exposes `init?(rawValue: String)` and
+`rawValue: String`, with `RawRepresentable`, `Sendable`, and explicit exact
+`Equatable`/`Hashable` behavior. A synthesized `enum E: String` is unsuitable:
+Swift raw-value matching merges canonically equivalent strings, unlike JSON's
+Unicode-scalar equality. Even a manually implemented `RawRepresentable` enum
+inherits raw-value-based equality/hash defaults unless overridden. The emitter
+therefore compares scalar sequences and hashes the same scalar sequence.
+Distinct JSON strings survive parsing, case identity, sets, and raw conversion.
+
+Case IDs contain UTF-8 hex value bytes, independent of enum order and Swift's
+canonical `String` equality. Exact duplicates share a case, while all original
+enum indices remain selectors and the validation literal is left untouched.
+Entry provenance is captured before reference specialization changes the model
+identity. Intersections and enum-valued reference siblings contribute selectors
+by exact value rather than by projected-array position, so reordered/subset
+refinements cannot rename the wrong case. Entries outside the chosen bound have
+no case, and conflicting names for matching entries are diagnosed.
+ASCII case normalization, contextual type naming, collision digests, namespace
+boundaries, and explicit-name diagnostics reuse the existing contracts.
+`rawValue`, `RawValue`, `hash`, and `hashValue` are reserved case names.
+
+### Bounded applicability
+
+The source enum must have at least one string and no non-string entries except
+null. String and nullable-string parsing domains are eligible; when there is no
+type, a pure enum supplies that domain. Nullable pairs and optional fields keep
+the existing `T?`/`T??` semantics. Empty/null-only enums, other mixed-type enums,
+unconstrained strings, and standalone `const` keep their previous output.
+Numeric/boolean enums and automatic `Codable` remain out of scope.
+
+Only positive conjunctive enum evidence supplies a finite bound. Intersections
+retain the first such bound, possibly a superset of the values allowed by the
+full schema, rather than adding a satisfiability solver. A second enum, `const`,
+pattern, `not`, or conditional still validates normally. `anyOf` and `oneOf`
+retain their selection/validity rules and independently modeled payloads;
+an unconstrained alternative never gets narrowed to a neighbor's enum.
+
+References reuse nominal identity as before; adding an enum-valued sibling is
+an output-shape specialization, including when the base is an unconstrained
+string. Validation-only refinements can share the base enum. Different source
+definitions remain distinct regardless of equal values. Enum type overrides
+target the schema location and case overrides target original `/enum/<index>`
+locations, including enum-bearing `allOf` conjuncts.
+
+No public configuration option or runtime dependency change is needed: this is
+part of `.models` everywhere, on published `swift-json-schema` 0.14.0 or later.
+Tuple generation, exact-number handling, and the immutable-class recursion
+policy are unchanged.
+
+### Verification
+
+On Swift 6.4 / macOS with the published 0.14.0 runtime, the package suite passes
+43 XCTest macro tests, 161 core tests, and 99 runtime tests. Focused coverage
+includes scalar-exact conversion/equality/hashing, duplicate and escaped values,
+null presence, naming stability, nominal reuse, reference specialization,
+composition validation parity, and a recursively refined enum union.
+
+The pinned official suite at `f6fd52a0a95472e079cbfc6ef7f089702b80e045`
+still generates 382/384 groups: 1,296 unique instances / 2,592 mode checks, with
+zero schema-value or runtime mismatches. The two custom-vocabulary dialect
+groups remain explicit unsupported-generation errors and the full command
+still exits nonzero. The 33 separate named/tuple public-consumer pairs, named
+CLI/plugin entry-point checks, existing CLI/plugin smoke suite, OpenAPI smoke
+suite, and official meta-schema smoke checks also pass. The design-token
+example now uses typed mode cases and bridges namespace-local enum types through
+their exact raw-string initializer.
+This does not claim local execution on Linux or the minimum Swift 6.1 compiler;
+the package's minimum tools version and platforms are unchanged.
+
+The local consumer/example manifests give the codegen dependency an explicit
+package name, so these checks can run in an isolated worktree whose directory
+name differs from `swift-json-schema-codegen`, without touching another checkout.
