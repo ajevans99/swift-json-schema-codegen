@@ -4,7 +4,8 @@ import JSONSchemaCodegen
 @main
 enum PluginExample {
   static func main() throws {
-    let theme = try ThemeSchema.schema.parseAndValidate(instance: fixture("Valid/theme.json"))
+    let theme: ThemeSchema.Value = try ThemeSchema.schema.parseAndValidate(
+      instance: fixture("Valid/theme.json"))
     guard theme.name == "Midnight", theme.dark else {
       throw ExampleFailure("Theme fixture did not round-trip expected values.")
     }
@@ -25,19 +26,20 @@ enum PluginExample {
       throw ExampleFailure("Shared spacing scale did not validate as expected.")
     }
 
-    let score = try ScoreSchema.schema.parseAndValidate(instance: fixture("Valid/score.json"))
+    let score: ScoreSchema.Value = try ScoreSchema.schema.parseAndValidate(
+      instance: fixture("Valid/score.json"))
     guard score == 42 else {
       throw ExampleFailure("Score fixture should validate to 42.")
     }
 
-    let settings = try AppSettingsSchema.schema.parseAndValidate(
+    let settings: AppSettingsSchema.Value = try AppSettingsSchema.schema.parseAndValidate(
       instance: fixture("Valid/app-settings.json")
     )
     guard settings.themeName == theme.name, settings.preferredMode == theme.mode else {
       throw ExampleFailure("Settings should reuse shared theme naming and mode definitions.")
     }
     guard settings.notifications.mentionsOnly, settings.layout.gutter == 24 else {
-      throw ExampleFailure("Settings fixture did not preserve nested tuple access.")
+      throw ExampleFailure("Settings fixture did not preserve named model fields.")
     }
     guard settings.bodyStyle.lineHeight == 1.5, settings.spacing.steps == [0, 1, 2, 4] else {
       throw ExampleFailure("Settings should reuse shared typography and spacing resources.")
@@ -60,7 +62,8 @@ enum PluginExample {
       try AppSettingsSchema.schema.parseAndValidate(instance: $0)
     }
     try expectValidationFailure(
-      "settings duplicate accent colors", fixture("Invalid/app-settings-duplicate-recent-accent-colors.json")
+      "settings duplicate accent colors",
+      fixture("Invalid/app-settings-duplicate-recent-accent-colors.json")
     ) {
       try AppSettingsSchema.schema.parseAndValidate(instance: $0)
     }
@@ -72,9 +75,10 @@ enum PluginExample {
   }
 
   private static func fixture(_ relativePath: String) throws -> String {
-    guard let url = Bundle.module.resourceURL?
-      .appendingPathComponent("Fixtures", isDirectory: true)
-      .appendingPathComponent(relativePath)
+    guard
+      let url = Bundle.module.resourceURL?
+        .appendingPathComponent("Fixtures", isDirectory: true)
+        .appendingPathComponent(relativePath)
     else {
       throw ExampleFailure("Bundle.module did not expose the Fixtures directory.")
     }

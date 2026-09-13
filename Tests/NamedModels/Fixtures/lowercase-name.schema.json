@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "child": {
+      "type": "object",
+      "properties": {"number": {"type": "integer"}},
+      "required": ["number"]
+    }
+  },
+  "required": ["child"]
+}

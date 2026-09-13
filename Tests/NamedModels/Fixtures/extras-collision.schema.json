@@ -1,0 +1,6 @@
+{
+  "type": "object",
+  "properties": {"additionalProperties": {"type": "string"}},
+  "required": ["additionalProperties"],
+  "additionalProperties": {"type": "integer"}
+}

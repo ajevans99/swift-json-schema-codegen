@@ -1,0 +1,9 @@
+{
+  "type": ["object", "null"],
+  "properties": {
+    "value": {"type": "integer"},
+    "next": {"$ref": "#"}
+  },
+  "required": ["value", "next"],
+  "additionalProperties": false
+}

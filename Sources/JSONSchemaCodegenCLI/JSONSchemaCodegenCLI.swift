@@ -3,6 +3,17 @@ import Foundation
 import JSONSchemaCodegenCore
 
 @main
+enum JSONSchemaCodegenEntryPoint {
+  static func main() {
+    let arguments = Array(CommandLine.arguments.dropFirst())
+    if arguments.first == "_validate-config" {
+      ValidateConfiguration.main(Array(arguments.dropFirst()))
+    } else {
+      JSONSchemaCodegenCLI.main(arguments)
+    }
+  }
+}
+
 struct JSONSchemaCodegenCLI: ParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "json-schema-codegen",
@@ -14,6 +25,8 @@ struct JSONSchemaCodegenCLI: ParsableCommand {
       Inputs are sorted, conflicting generated names are rejected, and unchanged
       files are not rewritten.
 
+      Configuration precedence is defaults, then --config, then explicit flags.
+      Relative override selectors are resolved from the configuration directory.
       Use '--' before input paths that begin with '-'.
       """
   )
@@ -30,6 +43,24 @@ struct JSONSchemaCodegenCLI: ParsableCommand {
   )
   var outputDirectory: URL
 
+  @Option(name: .long, help: "Output representation: tuples or models.")
+  var outputStyle: CLIOutputStyle?
+
+  @Option(name: .long, help: "Recursive object storage: value-types or immutable-classes.")
+  var recursiveObjects: CLIRecursiveObjects?
+
+  @Option(
+    name: .long,
+    help: ArgumentHelp("Version 1 JSON configuration file.", valueName: "file"),
+    transform: { path in
+      guard !path.isEmpty else {
+        throw ValidationError("The configuration file path must not be empty.")
+      }
+      return URL(fileURLWithPath: path).standardizedFileURL
+    }
+  )
+  var config: URL?
+
   @Argument(
     help: ArgumentHelp("JSON Schema input files.", valueName: "file.schema.json"),
     transform: { URL(fileURLWithPath: $0).standardizedFileURL }
@@ -38,6 +69,12 @@ struct JSONSchemaCodegenCLI: ParsableCommand {
 
   mutating func run() throws {
     let inputs = inputs.sorted { $0.path < $1.path }
+    var configuration = try CLIConfiguration(file: config, emittedRootCount: inputs.count)
+    if let outputStyle { configuration.options.output = outputStyle.schemaValue }
+    if let recursiveObjects {
+      configuration.options.recursiveObjects = recursiveObjects.schemaValue
+    }
+    try configuration.validate()
     var names: [String: URL] = [:]
     let plans: [(input: URL, typeName: String, output: URL)] = try inputs.map { input in
       let typeName: String
@@ -50,7 +87,8 @@ struct JSONSchemaCodegenCLI: ParsableCommand {
       let collisionKey = outputName.lowercased()
       if let previous = names[collisionKey] {
         throw CLIError(
-          message: "\(input.path): Generated filename '\(outputName)' collides with \(previous.path). Rename one of the input files."
+          message:
+            "\(input.path): Generated filename '\(outputName)' collides with \(previous.path). Rename one of the input files."
         )
       }
       names[collisionKey] = input
@@ -61,13 +99,20 @@ struct JSONSchemaCodegenCLI: ParsableCommand {
     let documents: [SchemaDocument] = try plans.map { plan in
       do {
         let source = try String(contentsOf: plan.input, encoding: .utf8)
-        return SchemaDocument(source: source, retrievalURI: plan.input)
+        return SchemaDocument(
+          source: source, retrievalURI: plan.input, logicalName: plan.input.lastPathComponent
+        )
       } catch {
         throw CLIError(message: "\(plan.input.path): #: \(error)")
       }
     }
 
-    let generatedSchemas = try SchemaGenerator().generate(documents)
+    let generatedSchemas: [GeneratedSchema]
+    do {
+      generatedSchemas = try SchemaGenerator(options: configuration.options).generate(documents)
+    } catch let error as SchemaGenerationError {
+      throw configuration.locating(error)
+    }
 
     let outputs: [(url: URL, data: Data)] = zip(plans, generatedSchemas).map { plan, generated in
       let expression = generated.expression
@@ -107,6 +152,58 @@ struct JSONSchemaCodegenCLI: ParsableCommand {
         throw CLIError(message: "\(output.url.path): \(error)")
       }
     }
+  }
+}
+
+enum CLIOutputStyle: String, ExpressibleByArgument {
+  case tuples, models
+
+  var schemaValue: SchemaOutputStyle {
+    switch self {
+    case .tuples: .tuples
+    case .models: .models
+    }
+  }
+}
+
+enum CLIRecursiveObjects: String, ExpressibleByArgument {
+  case valueTypes = "value-types"
+  case immutableClasses = "immutable-classes"
+
+  var schemaValue: RecursiveObjectStrategy {
+    switch self {
+    case .valueTypes: .valueTypes
+    case .immutableClasses: .immutableClasses
+    }
+  }
+}
+
+/// The plugin still validates a target-local config when there are no schemas.
+private struct ValidateConfiguration: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "_validate-config", shouldDisplay: false
+  )
+
+  @Argument(transform: { URL(fileURLWithPath: $0).standardizedFileURL })
+  var file: URL
+
+  @Option(name: .long, transform: { URL(fileURLWithPath: $0).standardizedFileURL })
+  var stamp: URL
+
+  mutating func run() throws {
+    let configuration = try CLIConfiguration(file: file, emittedRootCount: 0)
+    try configuration.validate()
+    guard configuration.options.names.typeNames.isEmpty,
+      configuration.options.names.caseNames.isEmpty
+    else {
+      throw ConfigurationError(
+        file: file, pointer: "", message: "Naming overrides have no emitted schema roots."
+      )
+    }
+    try FileManager.default.createDirectory(
+      at: stamp.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try Data("validated\n".utf8).write(to: stamp, options: .atomic)
   }
 }
 

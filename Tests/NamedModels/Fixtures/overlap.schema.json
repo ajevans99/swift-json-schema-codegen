@@ -1,0 +1,7 @@
+{
+  "type": "object",
+  "anyOf": [
+    {"properties": {"x": {"type": "integer"}}, "required": ["x"]},
+    {"properties": {"y": {"type": "integer"}}, "required": ["y"]}
+  ]
+}

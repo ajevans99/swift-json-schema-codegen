@@ -20,12 +20,14 @@ public struct SchemaMacro: MemberMacro {
       )
     }
     let lexicalContext = [Syntax(namespace)] + context.lexicalContext
-    guard !lexicalContext.contains(where: { syntax in
-      if let generic = syntax.asProtocol(WithGenericParametersSyntax.self) {
-        return generic.genericParameterClause != nil || generic.genericWhereClause != nil
-      }
-      return syntax.as(ExtensionDeclSyntax.self)?.genericWhereClause != nil
-    }) else {
+    guard
+      !lexicalContext.contains(where: { syntax in
+        if let generic = syntax.asProtocol(WithGenericParametersSyntax.self) {
+          return generic.genericParameterClause != nil || generic.genericWhereClause != nil
+        }
+        return syntax.as(ExtensionDeclSyntax.self)?.genericWhereClause != nil
+      })
+    else {
       throw diagnostic(
         at: node,
         id: "generic-context",
@@ -59,8 +61,8 @@ public struct SchemaMacro: MemberMacro {
       )
     }
     guard case .argumentList(let arguments) = node.arguments,
-      arguments.count == 1, let argument = arguments.first,
-      argument.label == nil
+      let argument = arguments.first, argument.label == nil,
+      arguments.dropFirst().allSatisfy({ $0.label != nil })
     else {
       throw diagnostic(
         at: node,
@@ -79,7 +81,8 @@ public struct SchemaMacro: MemberMacro {
       throw diagnostic(
         at: literal,
         id: "interpolation",
-        message: "@Schema does not support string interpolation; use a complete JSON Schema literal."
+        message:
+          "@Schema does not support string interpolation; use a complete JSON Schema literal."
       )
     }
     guard let source = literal.representedLiteralValue else {
@@ -89,8 +92,11 @@ public struct SchemaMacro: MemberMacro {
         message: "@Schema requires a valid Swift string literal."
       )
     }
+    let options = try generationOptions(in: arguments)
     do {
-      let generated = try SchemaGenerator().generateSyntax(source)
+      let generated = try SchemaGenerator(options: options).generateSyntax(
+        source, namespaceName: namespace.name.text
+      )
       var modifiers = DeclModifierListSyntax()
       if let access = namespace.modifiers.first(where: {
         $0.name.tokenKind == .keyword(.public) || $0.name.tokenKind == .keyword(.package)
@@ -134,6 +140,137 @@ public struct SchemaMacro: MemberMacro {
     } catch let error as SchemaGenerationError {
       throw diagnostic(at: literal, id: "invalid-schema", message: error.description)
     }
+  }
+
+  private static func generationOptions(
+    in arguments: LabeledExprListSyntax
+  ) throws -> SchemaGenerationOptions {
+    var options = SchemaGenerationOptions()
+    var seen: Set<String> = []
+    for argument in arguments.dropFirst() {
+      let label = argument.label!.text
+      guard ["output", "recursiveObjects", "typeNames", "caseNames"].contains(label) else {
+        throw diagnostic(
+          at: argument, id: "unknown-option", message: "@Schema has no option '\(label)'."
+        )
+      }
+      guard seen.insert(label).inserted else {
+        throw diagnostic(
+          at: argument, id: "duplicate-option",
+          message: "@Schema option '\(label)' may only be supplied once."
+        )
+      }
+      switch label {
+      case "output":
+        let value = try enumCase(
+          argument.expression, type: "SchemaOutputStyle", cases: ["tuples", "models"]
+        )
+        options.output = SchemaOutputStyle(rawValue: value)!
+      case "recursiveObjects":
+        let value = try enumCase(
+          argument.expression, type: "RecursiveObjectStrategy",
+          cases: ["valueTypes", "immutableClasses"]
+        )
+        options.recursiveObjects = RecursiveObjectStrategy(rawValue: value)!
+      case "typeNames":
+        options.names.typeNames = try nameOverrides(argument.expression, label: label)
+      case "caseNames":
+        options.names.caseNames = try nameOverrides(argument.expression, label: label)
+      default:
+        break
+      }
+    }
+    return options
+  }
+
+  private static func enumCase(
+    _ expression: ExprSyntax, type: String, cases: [String]
+  ) throws -> String {
+    if let member = expression.as(MemberAccessExprSyntax.self),
+      member.declName.argumentNames == nil,
+      cases.contains(member.declName.baseName.text)
+    {
+      if member.base == nil { return member.declName.baseName.text }
+      if let base = member.base, let qualification = qualifiedName(base),
+        qualification == [type]
+          || qualification == ["JSONSchemaCodegen", type]
+          || qualification == ["JSONSchemaCodegenCore", type]
+          || qualification == ["JSONSchemaCodegenConfiguration", type]
+      {
+        return member.declName.baseName.text
+      }
+    }
+    throw diagnostic(
+      at: expression, id: "literal-enum-required",
+      message:
+        "@Schema requires a literal \(type) case: \(cases.map { "." + $0 }.joined(separator: " or "))."
+    )
+  }
+
+  private static func qualifiedName(_ expression: ExprSyntax) -> [String]? {
+    if let reference = expression.as(DeclReferenceExprSyntax.self),
+      reference.argumentNames == nil
+    {
+      return [reference.baseName.text]
+    }
+    if let member = expression.as(MemberAccessExprSyntax.self),
+      member.declName.argumentNames == nil, let base = member.base,
+      let names = qualifiedName(base)
+    {
+      return names + [member.declName.baseName.text]
+    }
+    return nil
+  }
+
+  private static func nameOverrides(
+    _ expression: ExprSyntax, label: String
+  ) throws -> [String: String] {
+    guard let dictionary = expression.as(DictionaryExprSyntax.self) else {
+      throw diagnostic(
+        at: expression, id: "literal-dictionary-required",
+        message: "@Schema '\(label)' requires a literal dictionary of string selectors and names."
+      )
+    }
+    guard case .elements(let elements) = dictionary.content else { return [:] }
+    var names: [String: String] = [:]
+    for element in elements {
+      let selector = try overrideString(element.key, label: label)
+      let name = try overrideString(element.value, label: label)
+      guard !selector.isEmpty else {
+        throw diagnostic(
+          at: element.key, id: "empty-selector",
+          message: "@Schema '\(label)' selectors must not be empty; use '#' for the root."
+        )
+      }
+      guard names[selector] == nil else {
+        throw diagnostic(
+          at: element.key, id: "duplicate-selector",
+          message: "@Schema '\(label)' contains duplicate selector '\(selector)'."
+        )
+      }
+      guard isSchemaOverrideIdentifier(name) else {
+        throw diagnostic(
+          at: element.value, id: "invalid-name",
+          message:
+            "@Schema '\(label)' override '\(name)' must be an unquoted ASCII Swift identifier."
+        )
+      }
+      names[selector] = name
+    }
+    return names
+  }
+
+  private static func overrideString(_ expression: ExprSyntax, label: String) throws -> String {
+    guard let literal = expression.as(StringLiteralExprSyntax.self),
+      !literal.segments.contains(where: { $0.is(ExpressionSegmentSyntax.self) }),
+      let value = literal.representedLiteralValue
+    else {
+      throw diagnostic(
+        at: expression, id: "literal-override-required",
+        message: "@Schema '\(label)' keys and values must be non-interpolated string literals."
+      )
+    }
+    return value
   }
 
   private static func declaresSchema(_ declaration: DeclSyntax) -> Bool {

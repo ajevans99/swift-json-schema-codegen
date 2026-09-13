@@ -33,6 +33,10 @@ From the repository root, generate Swift on stdout:
 ```sh
 swift run --package-path Examples/OpenAPIExample openapi-generate \
   Examples/OpenAPIExample/Fixtures/style-api.openapi.json
+
+# Opt into Value models and semantic ready/pending response cases.
+swift run --package-path Examples/OpenAPIExample openapi-generate \
+  Examples/OpenAPIExample/Fixtures/style-api.openapi.json --output-style models
 ```
 
 Build and run the complete generated-source integration check:
@@ -43,8 +47,11 @@ bash Tests/OpenAPI/smoke.sh
 
 The smoke script stages a separate consumer package under the repository's
 `.build` directory, writes generated Swift into it, then compiles and executes
-[`Consumer/main.swift`](Consumer/main.swift). Staged sources are removed on exit;
-the Swift build cache remains in `.build/openapi-consumer`.
+[`Consumer/main.swift`](Consumer/main.swift) in both tuple and named modes.
+Named mode also checks `ThemeSchema.Value` and `.ready`/`.pending` payloads;
+tuple mode retains the existing `.option1`/`.option2` API. Staged sources are
+removed on exit; the build caches remain in `.build/openapi-consumer` and
+`.build/openapi-consumer-models`.
 
 The fixture and consumer exercise:
 
@@ -60,10 +67,12 @@ The fixture and consumer exercise:
 
 The adapter handles only OpenAPI **3.1.x JSON** `components.schemas`. It is not a
 full OpenAPI validator or HTTP client generator. It recognizes the OpenAPI 3.1
-base dialect and JSON Schema 2020-12, but rejects unsupported schema keywords
-(including `discriminator` and legacy `nullable`), custom dialects, and OpenAPI
-3.0. It performs no network reads and does not resolve operation objects or
-rewrite references. Explicit OpenAPI base `$schema` declarations are normalized
+base dialect and JSON Schema 2020-12, but rejects custom dialects and OpenAPI
+3.0. OpenAPI-only `discriminator` and legacy `nullable` are retained as annotations,
+not interpreted as validation or naming instructions. Semantic cases come from
+required JSON Schema discriminator fields with distinct constant values.
+The adapter performs no network reads and does not generate operation objects
+or modify the input files. Explicit OpenAPI base `$schema` declarations are normalized
 to JSON Schema 2020-12 at schema-bearing locations; annotations and `$id` scopes
 are preserved. The small example emitter requires ASCII identifier
 component names; the core adapter preserves arbitrary names and escaped pointers.

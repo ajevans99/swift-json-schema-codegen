@@ -1,0 +1,21 @@
+{
+  "$defs": {
+    "Address": {
+      "type": "object",
+      "properties": {
+        "street": {"type": "string"},
+        "postalCode": {"type": "string"}
+      },
+      "required": ["street"]
+    }
+  },
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "address": {"$ref": "#/$defs/Address"},
+    "nickname": {"type": ["string", "null"]},
+    "contact": {"type": ["string", "null"]}
+  },
+  "required": ["name", "address", "nickname"],
+  "additionalProperties": false
+}

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$root/Tests/Support/runtime.sh"
 mkdir -p "$root/.build"
 work="$root/.build/cli-smoke-$$-$RANDOM"
 mkdir "$work"
@@ -45,7 +46,12 @@ fi
 
 "$cli" --help >"$work/help" 2>"$work/stderr"
 [[ ! -s "$work/stderr" ]] || fail "Help wrote to stderr"
-grep -Fq 'USAGE: json-schema-codegen --output-directory <directory> <file.schema.json> ...' "$work/help"
+grep -Fq 'USAGE: json-schema-codegen --output-directory <directory>' "$work/help" ||
+  fail "Help omitted the required output-directory usage"
+grep -Fq '<file.schema.json> ...' "$work/help" || fail "Help omitted the variadic input usage"
+for option in '--output-style' '--recursive-objects' '--config'; do
+  grep -Fq -- "$option" "$work/help" || fail "Help omitted $option"
+done
 grep -q '^ARGUMENTS:' "$work/help"
 grep -q '^OPTIONS:' "$work/help"
 grep -Fq -- '-h, --help' "$work/help"
@@ -216,9 +222,9 @@ expect_failure "$cli" --output-directory "$work/generated" \
 cmp "$work/unchanged" "$work/generated/ThemeSchema.generated.swift"
 
 printf '%s\n' '{"type":"object","properties":{"bad":{"$ref":"#"}}}' >"$work/input/recursive.schema.json"
-expect_failure "$cli" --output-directory "$work/recursive" "$work/input/recursive.schema.json"
-grep -Fq '#/properties/bad/$ref' "$work/stderr"
-[[ ! -e "$work/recursive" ]] || fail "Recursive schema created output"
+"$cli" --output-directory "$work/recursive" "$work/input/recursive.schema.json"
+grep -Fq 'public indirect enum Reference1' "$work/recursive/RecursiveSchema.generated.swift"
+grep -Fq 'JSONReference<Reference1>' "$work/recursive/RecursiveSchema.generated.swift"
 
 expect_failure "$cli" --output-directory "$work/missing" "$work/input/missing.schema.json"
 grep -q 'missing.schema.json' "$work/stderr"
@@ -248,7 +254,7 @@ printf '%s\n' '{"$ref":"b-cycle.schema.json"}' >"$work/cycle/a-cycle.schema.json
 printf '%s\n' '{"$ref":"a-cycle.schema.json"}' >"$work/cycle/b-cycle.schema.json"
 expect_failure "$cli" --output-directory "$work/cycle-out" \
   "$work/cycle/a-cycle.schema.json" "$work/cycle/b-cycle.schema.json"
-grep -Fq "$work/cycle/b-cycle.schema.json: #/\$ref: Recursive reference cannot be represented" "$work/stderr"
+grep -Fq "$work/cycle/b-cycle.schema.json: #/\$ref: Recursive reference makes no instance progress" "$work/stderr"
 [[ ! -e "$work/cycle-out" ]] || fail "Cycle failure created output"
 
 mkdir "$work/duplicate-id"
@@ -259,6 +265,8 @@ expect_failure "$cli" --output-directory "$work/duplicate-id-out" \
 grep -Fq "$work/duplicate-id/b.schema.json: #/\$id: Duplicate schema resource URI" "$work/stderr"
 [[ ! -e "$work/duplicate-id-out" ]] || fail "Duplicate ID failure created output"
 
+use_runtime_checkout "$root/Examples/PluginExample" >"$work/runtime.log" 2>&1 ||
+  { cat "$work/runtime.log" >&2; fail "Local runtime configuration"; }
 swift run --package-path "$root/Examples/PluginExample" PluginExample \
   >"$work/example.stdout" 2>"$work/example.stderr" ||
   { cat "$work/example.stderr" >&2; fail "External plugin example"; }

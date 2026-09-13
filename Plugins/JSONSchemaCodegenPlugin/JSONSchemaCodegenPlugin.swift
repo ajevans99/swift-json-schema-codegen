@@ -6,11 +6,27 @@ struct JSONSchemaCodegenPlugin: BuildToolPlugin {
   func createBuildCommands(context: PluginContext, target: Target) async throws -> [Command] {
     guard target is SourceModuleTarget else { return [] }
     let inputs = try schemaFiles(in: target.directoryURL)
-    guard !inputs.isEmpty else { return [] }
+    // Exclude this file in Package.swift to avoid SwiftPM's unhandled-file warning;
+    // the plugin reads it explicitly, even when it is excluded from target sources.
+    let config = target.directoryURL.appendingPathComponent("json-schema-codegen.json")
+    let configurationFile = FileManager.default.fileExists(atPath: config.path) ? config : nil
+    guard !inputs.isEmpty || configurationFile != nil else { return [] }
 
     let outputDirectory = context.pluginWorkDirectoryURL.appendingPathComponent(
       "GeneratedSchemas", isDirectory: true
     )
+    if inputs.isEmpty, let configurationFile {
+      let stamp = context.pluginWorkDirectoryURL.appendingPathComponent("configuration.validated")
+      return [
+        .buildCommand(
+          displayName: "Validate JSON schema configuration for \(target.name)",
+          executable: try context.tool(named: "JSONSchemaCodegenCLI").url,
+          arguments: ["_validate-config", configurationFile.path, "--stamp", stamp.path],
+          inputFiles: [configurationFile],
+          outputFiles: [stamp]
+        )
+      ]
+    }
     var names: [String: URL] = [:]
     let outputs = try inputs.map { input in
       let typeName: String
@@ -23,7 +39,8 @@ struct JSONSchemaCodegenPlugin: BuildToolPlugin {
       let collisionKey = outputName.lowercased()
       if let previous = names[collisionKey] {
         throw PluginError(
-          message: "\(input.path): Generated filename '\(outputName)' collides with \(previous.path). Rename one of the input files."
+          message:
+            "\(input.path): Generated filename '\(outputName)' collides with \(previous.path). Rename one of the input files."
         )
       }
       names[collisionKey] = input
@@ -34,8 +51,10 @@ struct JSONSchemaCodegenPlugin: BuildToolPlugin {
       .buildCommand(
         displayName: "Generate JSON schemas for \(target.name)",
         executable: try context.tool(named: "JSONSchemaCodegenCLI").url,
-        arguments: ["--output-directory", outputDirectory.path, "--"] + inputs.map(\.path),
-        inputFiles: inputs,
+        arguments: ["--output-directory", outputDirectory.path]
+          + (configurationFile.map { ["--config", $0.path] } ?? [])
+          + ["--"] + inputs.map(\.path),
+        inputFiles: inputs + (configurationFile.map { [$0] } ?? []),
         outputFiles: outputs
       )
     ]
@@ -43,15 +62,17 @@ struct JSONSchemaCodegenPlugin: BuildToolPlugin {
 
   private func schemaFiles(in directory: URL) throws -> [URL] {
     var discoveryError: Error?
-    guard let enumerator = FileManager.default.enumerator(
-      at: directory,
-      includingPropertiesForKeys: [.isDirectoryKey],
-      options: [.skipsHiddenFiles],
-      errorHandler: { _, error in
-        discoveryError = error
-        return false
-      }
-    ) else {
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: directory,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles],
+        errorHandler: { _, error in
+          discoveryError = error
+          return false
+        }
+      )
+    else {
       throw PluginError(message: "Unable to enumerate schema files in \(directory.path).")
     }
     var inputs: [URL] = []

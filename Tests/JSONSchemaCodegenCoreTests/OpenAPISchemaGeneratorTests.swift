@@ -8,7 +8,8 @@ struct OpenAPISchemaGeneratorTests {
   let retrievalURI = URL(string: "https://styles.example/openapi.json")!
 
   @Test func componentsPreserveSourceOrderAndResolveForwardReferences() throws {
-    let components = try generate(#"""
+    let components = try generate(
+      #"""
       {
         "openapi":"3.1.0",
         "info":{"title":"Styles","version":"1"},
@@ -40,7 +41,8 @@ struct OpenAPISchemaGeneratorTests {
   }
 
   @Test func escapedComponentPointersAreNotRebased() throws {
-    let components = try generate(#"""
+    let components = try generate(
+      #"""
       {"openapi":"3.1.1","components":{"schemas":{
         "Alias":{"$ref":"#/components/schemas/a~1b~0c"},
         "a/b~c":{"type":"integer"}
@@ -65,7 +67,8 @@ struct OpenAPISchemaGeneratorTests {
     "https://json-schema.org/draft/2020-12/schema",
   ])
   func recognizedDialects(dialect: String) throws {
-    let components = try generate("""
+    let components = try generate(
+      """
       {"openapi":"3.1.0","jsonSchemaDialect":"\(dialect)","components":{"schemas":{
         "Name":{"$schema":"\(dialect)","type":"string"}
       }}}
@@ -74,7 +77,8 @@ struct OpenAPISchemaGeneratorTests {
   }
 
   @Test func dialectNormalizationPreservesNamesIDsReferencesAndAnnotationValues() throws {
-    let components = try generate(#"""
+    let components = try generate(
+      #"""
       {"openapi":"3.1.0","components":{"schemas":{
         "Alias":{"$ref":"types.json#/$defs/name"},
         "Types":{
@@ -95,11 +99,13 @@ struct OpenAPISchemaGeneratorTests {
     expectNoDifference(components[0].schema.outputType, "String")
     expectNoDifference(components[1].schema.outputType, "(`name`: String, `enabled`: Bool?)")
     #expect(components[0].schema.expression.contains(".minLength(2)"))
-    #expect(components[1].schema.expression.contains("https://spec.openapis.org/oas/3.1/dialect/base"))
+    #expect(
+      components[1].schema.expression.contains("https://spec.openapis.org/oas/3.1/dialect/base"))
   }
 
   @Test func componentIDsKeepTheirOwnResourceScope() throws {
-    let components = try generate(#"""
+    let components = try generate(
+      #"""
       {"openapi":"3.1.0","components":{"schemas":{
         "Alias":{"$ref":"types/typography.json#font"},
         "Typography":{
@@ -116,7 +122,8 @@ struct OpenAPISchemaGeneratorTests {
   }
 
   @Test func nonSchemaOpenAPIMetadataIsNotIndexed() throws {
-    let components = try generate(#"""
+    let components = try generate(
+      #"""
       {
         "openapi":"3.1.0",
         "$id":"https://wrong.example/ignored",
@@ -142,31 +149,41 @@ struct OpenAPISchemaGeneratorTests {
     (#"{"openapi":"3.1"}"#, "/openapi", "Only OpenAPI 3.1.x"),
     (#"{"openapi":"3.1.0\n"}"#, "/openapi", "Only OpenAPI 3.1.x"),
     (#"{"openapi":3.1}"#, "/openapi", "Only OpenAPI 3.1.x"),
-    (#"{"openapi":"3.1.0","jsonSchemaDialect":"https://example.com/custom"}"#,
-     "/jsonSchemaDialect", "dialects"),
+    (
+      #"{"openapi":"3.1.0","jsonSchemaDialect":"https://example.com/custom"}"#,
+      "/jsonSchemaDialect", "dialects"
+    ),
     (#"{"openapi":"3.1.0","jsonSchemaDialect":null}"#, "/jsonSchemaDialect", "dialects"),
     (#"{"openapi":"3.1.0","components":[]}"#, "/components", "object"),
     (#"{"openapi":"3.1.0","components":{"schemas":null}}"#, "/components/schemas", "object"),
     (#"{"openapi":"3.1.0","components":{"schemas":[]}}"#, "/components/schemas", "object"),
-    (#"{"openapi":"3.1.0","components":{"schemas":{"a/b~c":42}}}"#,
-     "/components/schemas/a~1b~0c", "schema object or boolean"),
-    (#"{"openapi":"3.1.0","components":{"schemas":{"Bad":[]}}}"#,
-     "/components/schemas/Bad", "schema object or boolean"),
-    (#"{"openapi":"3.1.0","components":{"schemas":{"Bad":null}}}"#,
-     "/components/schemas/Bad", "schema object or boolean"),
-    (#"{"openapi":"3.1.0","components":{"schemas":{"Bad":"string"}}}"#,
-     "/components/schemas/Bad", "schema object or boolean"),
+    (
+      #"{"openapi":"3.1.0","components":{"schemas":{"a/b~c":42}}}"#,
+      "/components/schemas/a~1b~0c", "schema object or boolean"
+    ),
+    (
+      #"{"openapi":"3.1.0","components":{"schemas":{"Bad":[]}}}"#,
+      "/components/schemas/Bad", "schema object or boolean"
+    ),
+    (
+      #"{"openapi":"3.1.0","components":{"schemas":{"Bad":null}}}"#,
+      "/components/schemas/Bad", "schema object or boolean"
+    ),
+    (
+      #"{"openapi":"3.1.0","components":{"schemas":{"Bad":"string"}}}"#,
+      "/components/schemas/Bad", "schema object or boolean"
+    ),
   ])
-  func malformedDocumentsHaveLocatedErrors(source: String, pointer: String, message: String) throws {
+  func malformedDocumentsHaveLocatedErrors(source: String, pointer: String, message: String) throws
+  {
     try expectFailure(source, pointer: pointer, message: message)
   }
 
   @Test(arguments: [
-    (#"{"type":"string","nullable":true}"#, "/nullable", "nullable"),
-    (#"{"type":"object","discriminator":{"propertyName":"kind"}}"#,
-     "/discriminator", "discriminator"),
-    (#"{"$schema":"https://json-schema.org/draft-07/schema","type":"string"}"#,
-     "/$schema", "dialect"),
+    (
+      #"{"$schema":"https://json-schema.org/draft-07/schema","type":"string"}"#,
+      "/$schema", "dialect"
+    ),
     (#"{"$ref":"https://unregistered.example/types.json"}"#, "/$ref", "No files or URLs"),
     (##"{"$ref":"#/info"}"##, "/$ref", "schema"),
     (##"{"$ref":"#/components/schemas/Bad"}"##, "/$ref", "Recursive reference"),
@@ -205,9 +222,10 @@ struct OpenAPISchemaGeneratorTests {
     expectNoDifference(font.outputType, "String")
     expectNoDifference(font.declarations, [])
     #expect(!font.expression.contains("eraseToAnySchemaComponent"))
-    #expect(font.expression.hasSuffix(
-      #".description("A supported web font or a CSS generic family.")"#
-    ))
+    #expect(
+      font.expression.hasSuffix(
+        #".description("A supported web font or a CSS generic family.")"#
+      ))
 
     let typography = try #require(components.first { $0.name == "Typography" }?.schema)
     expectNoDifference(typography.declarations, [])

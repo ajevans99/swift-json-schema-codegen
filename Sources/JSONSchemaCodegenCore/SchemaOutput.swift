@@ -6,7 +6,10 @@ indirect enum SchemaOutput: Hashable, ExpressibleByStringLiteral {
   }
 
   case named(String)
+  case model(String)
+  case recursive(String)
   case array(SchemaOutput)
+  case dictionary(SchemaOutput)
   case optional(SchemaOutput)
   case tuple([Field])
 

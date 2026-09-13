@@ -17,10 +17,16 @@ public struct GeneratedOpenAPISchema: Equatable, Sendable {
 /// This is a components adapter, not an OpenAPI document validator or HTTP client
 /// generator. Only `components.schemas` and their schema-bearing descendants are
 /// indexed. References retain their full document pointers and `$id` scopes.
-/// Generation performs no file or network I/O. YAML, OpenAPI 3.0, custom dialects,
-/// and OpenAPI-only schema keywords such as `discriminator` are not supported.
+/// Generation performs no file or network I/O. YAML, OpenAPI 3.0, and custom
+/// dialects are not supported. OpenAPI-only keywords such as `discriminator`
+/// remain annotations rather than changing validation or generated types.
 public struct OpenAPISchemaGenerator: Sendable {
-  public init() {}
+  public let options: SchemaGenerationOptions
+
+  /// Uses the same representation, recursion policy, and names as `SchemaGenerator`.
+  public init(options: SchemaGenerationOptions = .init()) {
+    self.options = options
+  }
 
   /// Returns components in source order, retaining their original names.
   ///
@@ -97,12 +103,15 @@ public struct OpenAPISchemaGenerator: Sendable {
       object["components"] = .object(components)
       schemaDocument = SchemaDocument(
         source: try JSONValue.object(object).serialized(),
-        retrievalURI: document.retrievalURI
+        retrievalURI: document.retrievalURI,
+        logicalName: document.logicalName
       )
     } else {
       schemaDocument = document
     }
-    let generated = try SchemaGenerator().generate(schemaDocument, schemaPointers: pointers)
+    let generated = try SchemaGenerator(options: options).generate(
+      schemaDocument, schemaPointers: pointers
+    )
     return zip(names, generated).map { GeneratedOpenAPISchema(name: $0.0, schema: $0.1) }
   }
 
@@ -112,7 +121,7 @@ public struct OpenAPISchemaGenerator: Sendable {
       object["$schema"] = .string("https://json-schema.org/draft/2020-12/schema")
       changed = true
     }
-    for keyword in ["$defs", "properties"] {
+    for keyword in SchemaKeywords.maps {
       if var children = object[keyword]?.object {
         for name in children.keys {
           if let child = children[name] {
@@ -122,12 +131,12 @@ public struct OpenAPISchemaGenerator: Sendable {
         object[keyword] = .object(children)
       }
     }
-    for keyword in ["items", "not", "additionalProperties"] {
+    for keyword in SchemaKeywords.singles {
       if let child = object[keyword] {
         object[keyword] = normalizingDialect(in: child, changed: &changed)
       }
     }
-    for keyword in ["allOf", "anyOf", "oneOf"] {
+    for keyword in SchemaKeywords.arrays {
       if let children = object[keyword]?.array {
         object[keyword] = .array(
           children.map { normalizingDialect(in: $0, changed: &changed) }

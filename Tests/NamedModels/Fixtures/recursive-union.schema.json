@@ -1,0 +1,5 @@
+{
+  "type": ["object", "boolean"],
+  "properties": {"not": {"$ref": "#"}},
+  "additionalProperties": false
+}

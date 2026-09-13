@@ -1,4 +1,5 @@
 import Foundation
+import JSONSchemaCodegenConfiguration
 import OrderedJSON
 import SwiftSyntax
 import SwiftSyntaxBuilder
@@ -38,23 +39,31 @@ public struct SchemaGenerationError: Error, Equatable, Sendable, CustomStringCon
 /// Lowers a supported JSON Schema 2020-12 document to JSONSchemaBuilder source.
 ///
 /// Generation performs no file or network I/O. References resolve through the
-/// explicitly supplied document registry. Unsupported keywords are errors rather
-/// than silently weakened schemas.
+/// explicitly supplied document registry. Unknown keywords are retained as
+/// annotations; unknown required vocabularies are rejected.
 public struct SchemaGenerator: Sendable {
-  public init() {}
+  public let options: SchemaGenerationOptions
+
+  public init(options: SchemaGenerationOptions = .init()) {
+    self.options = options
+  }
 
   public func generate(_ source: String) throws -> GeneratedSchema {
     try generateSyntax(source).serialized()
   }
 
-  package func generateSyntax(_ source: String) throws -> GeneratedSchemaSyntax {
+  package func generateSyntax(_ source: String, namespaceName: String? = nil) throws
+    -> GeneratedSchemaSyntax
+  {
     let graph = try SchemaReferenceGraph(
       documents: [
-        SchemaDocument(source: source, retrievalURI: URL(fileURLWithPath: "/inline.schema.json"))
+        SchemaDocument(
+          source: source, retrievalURI: URL(fileURLWithPath: "/inline.schema.json"),
+          logicalName: "inline.schema.json")
       ],
       includeDocumentURI: false
     )
-    var emitter = SchemaEmitter()
+    var emitter = SchemaEmitter(options: options, namespace: namespaceName)
     return try emitter.generate(graph.root(at: 0))
   }
 
@@ -64,31 +73,137 @@ public struct SchemaGenerator: Sendable {
   /// must be included in this array; URLs are identifiers, not fetch instructions.
   public func generate(_ documents: [SchemaDocument]) throws -> [GeneratedSchema] {
     let graph = try SchemaReferenceGraph(documents: documents)
-    return try documents.indices.map {
-      var emitter = SchemaEmitter()
-      return try emitter.generate(graph.root(at: $0)).serialized()
+    return try generate(roots: documents.indices.map { try graph.root(at: $0) })
+  }
+
+  private func generate(roots: [ResolvedSchema]) throws -> [GeneratedSchema] {
+    var usedTypes = Set<String>()
+    var usedCases = Set<String>()
+    let result = try roots.map { root in
+      var emitter = SchemaEmitter(options: options, allowsUnmatchedOverrides: true)
+      let result = try emitter.generate(root).serialized()
+      usedTypes.formUnion(emitter.usedTypeOverrides)
+      usedCases.formUnion(emitter.usedCaseOverrides)
+      return result
     }
+    for (kind, table, used) in [
+      ("type", options.names.typeNames, usedTypes), ("case", options.names.caseNames, usedCases),
+    ] {
+      if let key = Set(table.keys).subtracting(used).sorted().first {
+        throw SchemaGenerationError(
+          pointer: key,
+          message: "The \(kind)-name override '\(key)' does not resolve to an emitted \(kind).")
+      }
+    }
+    return result
+  }
+
+  /// Generates one entry point using an explicitly supplied offline reference registry.
+  public func generate(
+    _ document: SchemaDocument, referencing documents: [SchemaDocument]
+  ) throws -> GeneratedSchema {
+    let graph = try SchemaReferenceGraph(documents: [document] + documents)
+    var emitter = SchemaEmitter(options: options)
+    return try emitter.generate(graph.root(at: 0)).serialized()
   }
 
   func generate(_ document: SchemaDocument, schemaPointers: [String]) throws -> [GeneratedSchema] {
     let graph = try SchemaReferenceGraph(documents: [document], schemaPointers: schemaPointers)
-    return try schemaPointers.map {
-      var emitter = SchemaEmitter()
-      return try emitter.generate(graph.schema(at: $0)).serialized()
-    }
+    return try generate(roots: schemaPointers.map { try graph.schema(at: $0) })
   }
 }
 
 private struct SchemaEmitter {
+  let options: SchemaGenerationOptions
+  var namespace: String? = nil
+  private var models = SchemaModelGraph()
+  private var referenceDefinitions: [String: ResolvedSchema] = [:]
+  private var specializedReferences: [String: String] = [:]
+  private var usedReferences = Set<String>()
   private var visitedNodes = 0
   private var declarations: [DeclSyntax] = []
   private var nextUnion = 0
   private var unionNames: [[SchemaOutput]: String] = [:]
   private var includesValidationHelper = false
+  private let allowsUnmatchedOverrides: Bool
+  private(set) var usedTypeOverrides = Set<String>()
+  private(set) var usedCaseOverrides = Set<String>()
+
+  init(
+    options: SchemaGenerationOptions, namespace: String? = nil,
+    allowsUnmatchedOverrides: Bool = false
+  ) {
+    self.options = options
+    self.namespace = namespace
+    self.allowsUnmatchedOverrides = allowsUnmatchedOverrides
+  }
 
   mutating func generate(_ node: ResolvedSchema) throws -> GeneratedSchemaSyntax {
+    if options.output == .tuples,
+      !options.names.typeNames.isEmpty || !options.names.caseNames.isEmpty
+    {
+      throw failure(node.location.pointer, "Name overrides require output: .models.")
+    }
     try checkSchema(node)
-    let result = try plan(node)
+    for name in node.recursiveDefinitions.keys.sorted() {
+      if let definition = node.recursiveDefinitions[name] { try checkSchema(definition) }
+    }
+    referenceDefinitions = node.recursiveDefinitions
+    usedReferences = options.output == .models ? [] : Set(referenceDefinitions.keys)
+    var result = try plan(node)
+    var emittedReferences = Set<String>()
+    while let name = usedReferences.subtracting(emittedReferences).sorted().first {
+      guard let definition = referenceDefinitions[name] else {
+        throw failure(node.location.pointer, "Missing recursive definition '\(name)'.")
+      }
+      emittedReferences.insert(name)
+      let fragment = try plan(definition)
+      var complete = definition
+      complete.recursiveDefinitions = node.recursiveDefinitions
+      let validated = try applyingValidation(fragment, from: complete)
+      if options.output == .models {
+        models.referenceOutputs[name] = fragment.outputType
+        models.referenceProvenances[name] = SchemaModelGraph.provenance(definition)
+        declarations.append(
+          SchemaSyntax.modelRecursiveDeclaration(name, output: fragment.outputType))
+        declarations.append(
+          SchemaSyntax.modelRecursiveFactory(name, expression: validated.expression))
+      } else {
+        declarations.append(SchemaSyntax.recursiveDeclaration(name, output: fragment.outputType))
+        declarations.append(SchemaSyntax.recursiveFactory(name, expression: validated.expression))
+      }
+    }
+    if !node.recursiveDefinitions.isEmpty {
+      result = try applyingValidation(result, from: node)
+    }
+    if options.output == .models {
+      models.root = result.outputType
+      models.rootProvenance = SchemaModelGraph.provenance(node)
+      let layout = try SchemaModelLayout(graph: models, strategy: options.recursiveObjects)
+      let allocation = try SchemaModelAllocation(
+        graph: models, options: options, namespace: namespace,
+        allowsUnmatchedOverrides: allowsUnmatchedOverrides)
+      usedTypeOverrides = allocation.usedTypeOverrides
+      usedCaseOverrides = allocation.usedCaseOverrides
+      let typeRewriter = SchemaModelRewriter(
+        names: allocation.names, cases: allocation.cases, references: [:])
+      let references = try models.referenceOutputs.mapValues {
+        typeRewriter.rewrite(try models.resolving($0).syntax).cast(TypeSyntax.self)
+      }
+      let rewriter = SchemaModelRewriter(
+        names: allocation.names, cases: allocation.cases,
+        references: Dictionary(
+          uniqueKeysWithValues: references.map {
+            (SchemaModelNames.helperPrefix + "Output" + $0.key, $0.value)
+          }))
+      declarations =
+        try SchemaModelSyntax.declarations(
+          graph: models, names: allocation.names, cases: allocation.cases, layout: layout
+        ) + declarations.map { rewriter.rewrite($0).cast(DeclSyntax.self) }
+      result = SchemaFragment(
+        expression: rewriter.rewrite(result.expression).cast(ExprSyntax.self),
+        outputType: .named("Value"))
+    }
     return try SchemaSyntax.finish(result, declarations: declarations, at: node)
   }
 
@@ -99,12 +214,55 @@ private struct SchemaEmitter {
         throw failure(
           node.location.pointer, "Schema expansion exceeds the maximum of 10000 emitted nodes.")
       }
+      if let reference = node.reference {
+        if options.output == .models, !node.refinements.isEmpty,
+          node.refinements.contains(where: { refinement in
+            refinement.value.object?.keys.contains(where: {
+              [
+                "type", "properties", "required", "items", "prefixItems",
+                "additionalProperties", "allOf", "anyOf", "oneOf",
+              ].contains($0)
+            }) == true
+          }),
+          let target = referenceDefinitions[reference]
+        {
+          let identity = SchemaModelGraph.provenance(node).identity
+          let adapter: String
+          if let existing = specializedReferences[identity] {
+            adapter = existing
+          } else {
+            adapter = "Specialization\(specializedReferences.count + 1)"
+            specializedReferences[identity] = adapter
+            var definition = target
+            definition.refinements += node.refinements
+            definition.referenceApplication = node.referenceApplication
+            definition.modelProvenance = node.modelProvenance
+            referenceDefinitions[adapter] = definition
+          }
+          usedReferences.insert(adapter)
+          return try applyingValidation(
+            SchemaFragment(
+              expression: SchemaSyntax.modelRecursiveReference(adapter, uriName: reference),
+              outputType: .recursive(adapter)),
+            from: node)
+        }
+        if options.output == .models { usedReferences.insert(reference) }
+        let fragment = SchemaFragment(
+          expression: options.output == .models
+            ? SchemaSyntax.modelRecursiveReference(reference)
+            : SchemaSyntax.recursiveReference(reference),
+          outputType: options.output == .models ? .recursive(reference) : .named(reference))
+        return node.refinements.isEmpty
+          ? fragment : try applyingValidation(fragment, from: node)
+      }
       if let simplified = inliningModifierRefinements(node) {
         return try plan(simplified)
       }
       if !node.refinements.isEmpty || node.value.object?["allOf"] != nil {
+        var projection = try intersection(conjuncts(node), at: node)
+        projection.modelProvenance = node.modelProvenance
         return try applyingValidation(
-          plan(intersection(conjuncts(node), at: node)), from: node
+          plan(projection), from: node
         )
       }
       if var object = node.value.object, let anyOf = object["anyOf"], object["oneOf"] != nil {
@@ -116,7 +274,8 @@ private struct SchemaEmitter {
         let combined = ResolvedSchema(
           value: .object(["allOf": .array([first.value, second.value])]),
           location: node.location, documentURI: node.documentURI,
-          children: ["allOf/0": first, "allOf/1": second]
+          children: ["allOf/0": first, "allOf/1": second],
+          modelProvenance: node.modelProvenance
         )
         return try applyingValidation(plan(combined), from: node)
       }
@@ -130,6 +289,32 @@ private struct SchemaEmitter {
           base.value = .object(object)
         }
         return try applyingValidation(plan(base), from: node)
+      }
+      if let types = try schemaTypes(
+        node.value.object?["type"], at: node.location.child("type").pointer),
+        types.count > 2 || (types.count == 2 && !types.contains("null"))
+      {
+        var projection = node
+        projection.value = .object(["anyOf": .array(types.map { .object(["type": .string($0)]) })])
+        for (index, type) in types.enumerated() {
+          var branch = node
+          if var object = branch.value.object {
+            object["type"] = .string(type)
+            branch.value = .object(object)
+          }
+          if options.output == .models {
+            let provenance = SchemaModelGraph.provenance(node)
+            branch.modelProvenance = .init(
+              identity: provenance.identity + "|type:" + type,
+              origins: provenance.origins.map {
+                .init(
+                  pointer: $0.pointer + "/type/\(index)", documentURI: $0.documentURI,
+                  logicalDocument: $0.logicalDocument, resource: $0.resource + "/type/\(index)")
+              })
+          }
+          projection.children["anyOf/\(index)"] = branch
+        }
+        return try applyingValidation(union(projection, keyword: "anyOf"), from: node)
       }
       return try emit(node)
     } catch let error as SchemaGenerationError {
@@ -164,34 +349,65 @@ private struct SchemaEmitter {
       throw failure(node.location.pointer, "Missing composition branches.")
     }
     var outputs: [SchemaFragment] = []
+    var branchSchemas: [ResolvedSchema] = []
     var sibling = node
     if var object = sibling.value.object {
       object.removeValue(forKey: keyword)
       sibling.value = .object(object)
     }
+    let parsingSibling = removingUnevaluatedKeywords(sibling)
     for index in branches.indices {
       guard let branch = node.children["\(keyword)/\(index)"] else {
         throw failure(node.location.pointer, "Missing resolved composition branch.")
       }
-      if ["properties", "required", "items"].contains(where: { sibling.value.object?[$0] != nil }) {
+      if ["properties", "required", "items"].contains(where: { sibling.value.object?[$0] != nil })
+        || (options.output == .models && sibling.value.object?["type"] != nil)
+      {
         let combined = ResolvedSchema(
-          value: .object(["allOf": .array([sibling.value, branch.value])]),
+          value: .object(["allOf": .array([parsingSibling.value, branch.value])]),
           location: node.location, documentURI: node.documentURI,
-          children: ["allOf/0": sibling, "allOf/1": branch]
+          children: ["allOf/0": parsingSibling, "allOf/1": branch],
+          modelProvenance: SchemaModelGraph.specialization(
+            of: node, path: [keyword, String(index)], constraints: [parsingSibling, branch])
         )
         outputs.append(try plan(combined))
+        branchSchemas.append(try intersection(conjuncts(combined), at: branch))
       } else {
         outputs.append(try plan(branch))
+        branchSchemas.append(branch)
       }
     }
-    guard let first = outputs.first else {
+    guard !outputs.isEmpty else {
       throw failure(node.location.pointer, "A union must have at least one branch.")
     }
+    let unionPlan = SchemaParsingPlan.Union(branches: outputs)
     let outputType: SchemaOutput
     let body: [ExprSyntax]
-    if outputs.allSatisfy({ $0.outputType == first.outputType }) {
-      outputType = first.outputType
+    if let common = unionPlan.commonOutput {
+      outputType = common
       body = outputs.map(\.expression)
+    } else if options.output == .models, let null = unionPlan.nullableBranch {
+      outputType = .optional(outputs[1 - null].outputType)
+      body = outputs.enumerated().map { index, fragment in
+        SchemaModelSyntax.map(
+          fragment.expression, to: outputType,
+          value: index == null
+            ? ExprSyntax(NilLiteralExprSyntax())
+            : SchemaSyntax.call(
+              SchemaSyntax.member("some"),
+              [
+                SchemaSyntax.argument(SchemaSyntax.reference(SchemaModelSyntax.parsedValueName))
+              ]))
+      }
+    } else if options.output == .models {
+      let (model, branches) = models.union(
+        at: node, keyword: keyword, outputs: outputs, schemas: branchSchemas)
+      outputType = model
+      body = outputs.enumerated().map { index, fragment in
+        SchemaModelSyntax.unionMap(
+          fragment.expression, output: model, branch: branches[index],
+          null: fragment.outputType == .named("Void"))
+      }
     } else {
       // Identical union shapes share one nominal declaration within a namespace.
       let key = outputs.map(\.outputType)
@@ -270,6 +486,10 @@ private struct SchemaEmitter {
   private func conjuncts(_ node: ResolvedSchema) -> [ResolvedSchema] {
     var base = node
     base.refinements = []
+    base.referenceApplication = nil
+    if !node.refinements.isEmpty || node.value.object?["allOf"] != nil {
+      base = removingUnevaluatedKeywords(base)
+    }
     var result: [ResolvedSchema] = []
     if var object = base.value.object, let branches = object.removeValue(forKey: "allOf")?.array {
       base.value = .object(object)
@@ -278,6 +498,17 @@ private struct SchemaEmitter {
       }
     }
     return [base] + result + node.refinements.flatMap(conjuncts)
+  }
+
+  private func removingUnevaluatedKeywords(_ node: ResolvedSchema) -> ResolvedSchema {
+    var result = node
+    if var object = result.value.object {
+      // Complete-schema validation consumes annotations before parsing branches.
+      object.removeValue(forKey: "unevaluatedProperties")
+      object.removeValue(forKey: "unevaluatedItems")
+      result.value = .object(object)
+    }
+    return result
   }
 
   /// Build only the parsing projection. Validation uses the original conjunction,
@@ -301,7 +532,7 @@ private struct SchemaEmitter {
       }
       var siblings = nodes
       siblings.remove(at: unionIndex)
-      var ownSiblings = union
+      var ownSiblings = removingUnevaluatedKeywords(union)
       if var object = ownSiblings.value.object {
         object.removeValue(forKey: keyword)
         ownSiblings.value = .object(object)
@@ -323,7 +554,9 @@ private struct SchemaEmitter {
           children: Dictionary(
             uniqueKeysWithValues: constraints.enumerated().map {
               ("allOf/\($0.offset)", $0.element)
-            })
+            }),
+          modelProvenance: SchemaModelGraph.specialization(
+            of: location, path: [keyword, String(index)], constraints: constraints)
         )
       }
       return projected
@@ -331,10 +564,8 @@ private struct SchemaEmitter {
     var domain: Set<String>?
     for node in nodes {
       if let type = node.value.object?["type"] {
-        let (name, nullable) = try schemaType(type, at: node.location.child("type").pointer)
-        var types: Set<String> = [name ?? ""]
-        if name == "number" { types.insert("integer") }
-        if nullable { types.insert("null") }
+        var types = Set(try schemaTypes(type, at: node.location.child("type").pointer) ?? [])
+        if types.contains("number") { types.insert("integer") }
         domain = domain.map { $0.intersection(types) } ?? types
       }
     }
@@ -347,6 +578,21 @@ private struct SchemaEmitter {
         value: .boolean(false), location: location.location, documentURI: location.documentURI)
     }
     if domain.contains("number") { domain.remove("integer") }
+    if domain.count > 2 || (domain.count == 2 && !domain.contains("null")) {
+      let orderedTypes = Self.typeOrder.filter(domain.contains)
+      var union = ResolvedSchema(
+        value: .object(["anyOf": .array(orderedTypes.map { .object(["type": .string($0)]) })]),
+        location: location.location, documentURI: location.documentURI
+      )
+      for (index, type) in orderedTypes.enumerated() {
+        let typeNode = ResolvedSchema(
+          value: .object(["type": .string(type)]),
+          location: location.location, documentURI: location.documentURI
+        )
+        union.children["anyOf/\(index)"] = try intersection(nodes + [typeNode], at: location)
+      }
+      return union
+    }
     let nullable = domain.count > 1 && domain.contains("null")
     let type = domain.first(where: { $0 != "null" }) ?? "null"
     var projection = ResolvedSchema(
@@ -371,13 +617,6 @@ private struct SchemaEmitter {
           required.append(key)
         }
       }
-      for key in required.compactMap(\.string) where fields[key] == nil {
-        order.append(key)
-        fields[key] = [
-          ResolvedSchema(
-            value: .object([:]), location: location.location, documentURI: location.documentURI)
-        ]
-      }
       for name in order {
         guard let variants = fields[name], let first = variants.first else { continue }
         var field = first
@@ -387,7 +626,9 @@ private struct SchemaEmitter {
             location: first.location, documentURI: first.documentURI,
             children: Dictionary(
               uniqueKeysWithValues: variants.enumerated().map { ("allOf/\($0.offset)", $0.element) }
-            )
+            ),
+            modelProvenance: SchemaModelGraph.specialization(
+              of: location, path: ["properties", name], constraints: variants)
           )
         }
         if var object = properties.object {
@@ -400,7 +641,51 @@ private struct SchemaEmitter {
         "type": nullable ? .array([.string("object"), .string("null")]) : .string("object"),
         "properties": properties, "required": .array(required),
       ])
+      var object = projection.value.object ?? [:]
+      var patterns = JSONValue.object([:])
+      for node in nodes {
+        for name in node.value.object?["patternProperties"]?.object.map({ Array($0.keys) }) ?? [] {
+          if var entries = patterns.object {
+            entries[name] = .boolean(true)
+            patterns = .object(entries)
+          }
+        }
+      }
+      if patterns.object?.isEmpty == false { object["patternProperties"] = patterns }
+      if nodes.contains(where: { $0.value.object?["additionalProperties"]?.object != nil }) {
+        let variants = nodes.compactMap { $0.children["additionalProperties"] }
+        if let first = variants.first {
+          let additional =
+            variants.count == 1
+            ? first
+            : ResolvedSchema(
+              value: .object(["allOf": .array(variants.map(\.value))]),
+              location: first.location, documentURI: first.documentURI,
+              children: Dictionary(
+                uniqueKeysWithValues: variants.enumerated().map {
+                  ("allOf/\($0.offset)", $0.element)
+                }
+              ),
+              modelProvenance: SchemaModelGraph.specialization(
+                of: location, path: ["additionalProperties"], constraints: variants)
+            )
+          object["additionalProperties"] = additional.value
+          projection.children["additionalProperties"] = additional
+        }
+      }
+      projection.value = .object(object)
     } else if type == "array" {
+      if let prefix = nodes.first(where: { $0.value.object?["prefixItems"] != nil }) {
+        // A heterogeneous prefix must not be parsed through the tail's item type.
+        if var object = projection.value.object {
+          object["prefixItems"] = prefix.value.object?["prefixItems"]
+          projection.value = .object(object)
+        }
+        for (key, child) in prefix.children where key.hasPrefix("prefixItems/") {
+          projection.children[key] = child
+        }
+        return projection
+      }
       let items = nodes.compactMap { $0.children["items"] }
       if let first = items.first {
         let item =
@@ -410,7 +695,9 @@ private struct SchemaEmitter {
             value: .object(["allOf": .array(items.map(\.value))]),
             location: first.location, documentURI: first.documentURI,
             children: Dictionary(
-              uniqueKeysWithValues: items.enumerated().map { ("allOf/\($0.offset)", $0.element) })
+              uniqueKeysWithValues: items.enumerated().map { ("allOf/\($0.offset)", $0.element) }),
+            modelProvenance: SchemaModelGraph.specialization(
+              of: location, path: ["items"], constraints: items)
           )
         projection.children["items"] = item
         if var object = projection.value.object {
@@ -427,6 +714,7 @@ private struct SchemaEmitter {
   private func checkSchema(_ node: ResolvedSchema) throws {
     do {
       for refinement in node.refinements { try checkSchema(refinement) }
+      if node.reference != nil { return }
       guard let object = node.value.object else {
         guard node.value.boolean != nil else {
           throw failure(node.location.pointer, "Expected a schema object or boolean.")
@@ -435,21 +723,22 @@ private struct SchemaEmitter {
       }
       for (key, value) in object {
         let pointer = node.location.child(key).pointer
-        guard Self.supportedKeywords.contains(key) else {
-          throw failure(pointer, "Unsupported keyword '\(key)'.")
-        }
         if Self.nonnegativeIntegers.contains(key) {
           _ = try nonnegativeInteger(value, at: pointer)
         } else if Self.numericKeywords.contains(key) {
-          let number = try finiteNumber(value, at: pointer)
-          if key == "multipleOf", number <= 0 {
+          let number = try numberLiteral(value, at: pointer)
+          if key == "multipleOf", number <= JSONNumberLiteral(0) {
             throw failure(pointer, "'multipleOf' must be greater than zero.")
           }
         } else {
           switch key {
-          case "type": _ = try schemaType(value, at: pointer)
-          case "title", "description", "$comment", "$id", "$schema", "$anchor", "format":
+          case "type": _ = try schemaTypes(value, at: pointer)
+          case "title", "description", "$comment", "$id", "$schema", "$anchor", "format",
+            "contentEncoding", "contentMediaType":
             _ = try string(value, at: pointer)
+            if key == "$schema", value.string != "https://json-schema.org/draft/2020-12/schema" {
+              throw failure(pointer, "Only the JSON Schema 2020-12 dialect is supported.")
+            }
           case "pattern":
             let pattern = try string(value, at: pointer)
             do { _ = try NSRegularExpression(pattern: pattern) } catch {
@@ -457,12 +746,6 @@ private struct SchemaEmitter {
             }
           case "readOnly", "writeOnly", "deprecated", "uniqueItems":
             _ = try boolean(value, at: pointer)
-          case "additionalProperties":
-            guard value.boolean != nil else {
-              throw failure(
-                pointer,
-                "Schema-valued additional properties are not yet supported; expected a boolean.")
-            }
           case "required":
             guard let keys = value.array else {
               throw failure(pointer, "'required' must be an array of unique property names.")
@@ -471,21 +754,45 @@ private struct SchemaEmitter {
             guard Set(strings).count == strings.count else {
               throw failure(pointer, "'required' must contain unique property names.")
             }
-          case "properties":
-            if let properties = value.object {
-              for name in properties.keys where !isIdentifier(name) {
+          case "patternProperties":
+            for pattern in value.object.map({ Array($0.keys) }) ?? [] {
+              do { _ = try NSRegularExpression(pattern: pattern) } catch {
                 throw failure(
-                  node.location.child("properties").child(name).pointer,
-                  "Property name '\(name)' cannot be represented as a Swift tuple label; use an ASCII identifier."
-                )
+                  node.location.child(key).child(pattern).pointer,
+                  "Invalid regular expression: \(error.localizedDescription)")
+              }
+            }
+          case "dependentRequired":
+            guard let dependencies = value.object else {
+              throw failure(pointer, "'dependentRequired' must be an object.")
+            }
+            for (name, dependency) in dependencies {
+              let location = node.location.child(key).child(name).pointer
+              guard let values = dependency.array else {
+                throw failure(location, "Expected an array of unique property names.")
+              }
+              let names = try values.map { try string($0, at: location) }
+              guard Set(names).count == names.count else {
+                throw failure(location, "Expected unique property names.")
+              }
+            }
+          case "$vocabulary":
+            guard let vocabularies = value.object else {
+              throw failure(pointer, "'$vocabulary' must be an object.")
+            }
+            for (uri, value) in vocabularies {
+              let location = node.location.child(key).child(uri).pointer
+              let required = try boolean(value, at: location)
+              guard let url = URL(string: uri), url.scheme != nil else {
+                throw failure(location, "Vocabulary identifiers must be absolute URIs.")
+              }
+              if required, !Self.standardVocabularies.contains(uri) {
+                throw failure(location, "Unsupported required vocabulary '\(uri)'.")
               }
             }
           case "enum":
-            guard let cases = value.array, !cases.isEmpty else {
-              throw failure(pointer, "'enum' must be a nonempty array.")
-            }
-            guard Set(cases).count == cases.count else {
-              throw failure(pointer, "'enum' values must be unique.")
+            guard value.array != nil else {
+              throw failure(pointer, "'enum' must be an array.")
             }
           case "examples":
             guard value.array != nil else { throw failure(pointer, "'examples' must be an array.") }
@@ -527,11 +834,9 @@ private struct SchemaEmitter {
     guard let object = value.object else {
       throw failure(pointer, "Expected a schema object or boolean.")
     }
-    for key in object.keys where !Self.supportedKeywords.contains(key) {
-      throw failure(child(pointer, key), "Unsupported keyword '\(key)'.")
-    }
-
     let (type, nullable) = try schemaType(object["type"], at: child(pointer, "type"))
+    var requiresValidationDefinition = (object["required"]?.array ?? [])
+      .compactMap(\.string).contains { object["properties"]?.object?[$0] == nil }
     var expression: ExprSyntax
     var outputType: SchemaOutput
     switch type {
@@ -555,6 +860,12 @@ private struct SchemaEmitter {
       expression = generated.expression
       outputType = generated.outputType
     case "array":
+      if object["prefixItems"] != nil {
+        expression = SchemaSyntax.call(SchemaSyntax.reference("JSONArray"))
+        outputType = .array("JSONValue")
+        requiresValidationDefinition = true
+        break
+      }
       let itemNode =
         node.children["items"]
         ?? ResolvedSchema(
@@ -577,19 +888,24 @@ private struct SchemaEmitter {
       let location = child(pointer, key)
       guard let keyword = object[key] else { continue }
       if let types = Self.keywordTypes[key], !types.contains(type ?? "") {
-        throw failure(location, "'\(key)' requires an explicit compatible 'type'.")
+        requiresValidationDefinition = true
+        continue
+      }
+      if Self.validationOnlyKeywords.contains(key) || !Self.supportedKeywords.contains(key) {
+        requiresValidationDefinition = true
+        continue
       }
       if Self.nonnegativeIntegers.contains(key) {
         let number = try nonnegativeInteger(keyword, at: location)
         expression = SchemaSyntax.modifier(
           expression, key, [SchemaSyntax.argument(ExprSyntax(literal: number))])
       } else if Self.numericKeywords.contains(key) {
-        let number = try finiteNumber(keyword, at: location)
-        if key == "multipleOf", number <= 0 {
+        let number = try numberLiteral(keyword, at: location)
+        if key == "multipleOf", number <= JSONNumberLiteral(0) {
           throw failure(location, "'multipleOf' must be greater than zero.")
         }
         expression = SchemaSyntax.modifier(
-          expression, key, [SchemaSyntax.argument(ExprSyntax(literal: number))])
+          expression, key, [SchemaSyntax.argument(try numericArgument(number))])
       } else {
         switch key {
         case "pattern", "format":
@@ -605,9 +921,8 @@ private struct SchemaEmitter {
             expression, key, [SchemaSyntax.argument(SchemaSyntax.stringLiteral(text))])
         case "additionalProperties", "uniqueItems":
           if key == "additionalProperties", keyword.boolean == nil {
-            throw failure(
-              location,
-              "Schema-valued additional properties are not yet supported; expected a boolean.")
+            requiresValidationDefinition = true
+            continue
           }
           expression = SchemaSyntax.modifier(
             expression, key,
@@ -629,7 +944,9 @@ private struct SchemaEmitter {
         ])
       outputType = .optional(outputType)
     }
-    return SchemaFragment(expression: expression, outputType: outputType)
+    let generated = SchemaFragment(expression: expression, outputType: outputType)
+    return requiresValidationDefinition
+      ? try applyingValidation(generated, from: node) : generated
   }
 
   private func applyingCommonModifiers(to source: ExprSyntax, from node: ResolvedSchema) throws
@@ -679,11 +996,8 @@ private struct SchemaEmitter {
     }
     if let keyword = object["enum"] {
       let location = node.location.child("enum").pointer
-      guard let values = keyword.array, !values.isEmpty else {
-        throw failure(location, "'enum' must be a nonempty array.")
-      }
-      guard Set(values).count == values.count else {
-        throw failure(location, "'enum' values must be unique.")
+      guard let values = keyword.array else {
+        throw failure(location, "'enum' must be an array.")
       }
       expression = SchemaSyntax.call(
         SchemaSyntax.member(SchemaSyntax.reference("JSONComponents"), "Enum"),
@@ -700,75 +1014,98 @@ private struct SchemaEmitter {
   }
 
   private mutating func objectPlan(_ node: ResolvedSchema) throws -> SchemaFragment {
-    let pointer = node.location.pointer
-    guard let object = node.value.object else {
-      throw failure(pointer, "Expected an object schema.")
-    }
-    let propertiesValue = object["properties"] ?? .object([:])
-    guard let properties = propertiesValue.object else {
-      throw failure(child(pointer, "properties"), "'properties' must be an object.")
-    }
-    var required = Set<String>()
-    if let keyword = object["required"] {
-      let location = child(pointer, "required")
-      guard let values = keyword.array else {
-        throw failure(location, "'required' must be an array of unique property names.")
-      }
-      for (index, value) in values.enumerated() {
-        let name = try string(value, at: child(location, String(index)))
-        guard required.insert(name).inserted else {
-          throw failure(location, "'required' must contain unique property names.")
-        }
-        guard properties[name] != nil else {
-          throw failure(location, "Required property '\(name)' must be declared in 'properties'.")
-        }
-      }
-    }
+    let object = SchemaParsingPlan.Object(node)
     var expressions: [ExprSyntax] = []
     var fields: [SchemaOutput.Field] = []
-    for name in properties.keys {
-      let location = child(child(pointer, "properties"), name)
-      guard isIdentifier(name) else {
-        throw failure(
-          location,
-          "Property name '\(name)' cannot be represented as a Swift tuple label; use an ASCII identifier."
-        )
-      }
-      guard let property = node.children["properties/" + name] else {
-        throw failure(location, "Missing resolved property schema.")
-      }
-      let generated = try plan(property)
-      let isRequired = required.contains(name)
+    var modelFields: [SchemaModelGraph.Field] = []
+    for property in object.properties {
+      let generated = try plan(property.schema)
       let expression = SchemaSyntax.call(
         SchemaSyntax.reference("JSONProperty"),
-        [SchemaSyntax.argument(SchemaSyntax.stringLiteral(name), label: "key")],
+        [SchemaSyntax.argument(SchemaSyntax.stringLiteral(property.key), label: "key")],
         body: [generated.expression]
       )
-      expressions.append(isRequired ? SchemaSyntax.modifier(expression, "required") : expression)
+      expressions.append(
+        property.required ? SchemaSyntax.modifier(expression, "required") : expression)
+      let type = property.required ? generated.outputType : .optional(generated.outputType)
       fields.append(
+        .init(name: property.label, type: type))
+      modelFields.append(
         .init(
-          name: name, type: isRequired ? generated.outputType : .optional(generated.outputType)
-        ))
+          key: property.key, name: property.label, type: type, absent: !property.required))
     }
-    guard !fields.isEmpty else {
-      return SchemaFragment(
-        expression: SchemaSyntax.call(SchemaSyntax.reference("JSONObject")), outputType: "Void"
-      )
-    }
-    var expression = SchemaSyntax.call(SchemaSyntax.reference("JSONObject"), body: expressions)
-    let outputType: SchemaOutput
-    if fields.count == 1 {
+    var expression =
+      fields.isEmpty
+      ? SchemaSyntax.call(SchemaSyntax.reference("JSONObject"))
+      : SchemaSyntax.call(SchemaSyntax.reference("JSONObject"), body: expressions)
+    var outputType: SchemaOutput
+    if fields.isEmpty {
+      outputType = "Void"
+    } else if fields.count == 1 {
       outputType = fields[0].type
     } else {
       outputType = .tuple(fields)
-      expression = SchemaSyntax.tupleMap(expression, fields: fields)
+      if options.output == .tuples {
+        expression = SchemaSyntax.tupleMap(expression, fields: fields)
+      }
+    }
+    if let additional = object.additional {
+      let generated = try plan(additional)
+      // Retain the original coverage of declared and pattern properties while
+      // parsing extra values. A required-only field is not a declared property.
+      if object.preservesCoverage {
+        expression = try applyingValidation(
+          SchemaFragment(expression: expression, outputType: outputType), from: node
+        ).expression
+      }
+      expression = SchemaSyntax.modifier(
+        expression, "additionalProperties",
+        closure: ClosureExprSyntax(statements: [
+          CodeBlockItemSyntax(leadingTrivia: .newline, item: .expr(generated.expression))
+        ]))
+      if options.output == .tuples || fields.isEmpty {
+        expression = SchemaSyntax.additionalPropertiesMap(
+          expression, hasProperties: !fields.isEmpty
+        )
+      }
+      let dictionary = SchemaOutput.dictionary(generated.outputType)
+      outputType =
+        fields.isEmpty
+        ? dictionary
+        : .tuple([
+          .init(name: "properties", type: outputType),
+          .init(name: "additionalProperties", type: dictionary),
+        ])
+      if !fields.isEmpty {
+        let labels = Set(fields.map(\.name))
+        var name = "additionalProperties"
+        var suffix = 2
+        while labels.contains(name) {
+          name = "additionalProperties_\(suffix)"
+          suffix += 1
+        }
+        modelFields.append(.init(key: nil, name: name, type: dictionary, absent: false))
+      }
+    }
+    if options.output == .models, !fields.isEmpty || object.additional == nil {
+      outputType = models.object(at: node, fields: modelFields)
+      expression = SchemaModelSyntax.objectMap(
+        expression, output: outputType, fields: modelFields,
+        hasAdditional: object.additional != nil && !fields.isEmpty)
     }
     return SchemaFragment(expression: expression, outputType: outputType)
   }
 
   private func schemaType(_ value: JSONValue?, at pointer: String) throws -> (String?, Bool) {
-    guard let value else { return (nil, false) }
-    if let type = value.string, Self.types.contains(type) { return (type, false) }
+    guard let types = try schemaTypes(value, at: pointer) else { return (nil, false) }
+    return (
+      types.first(where: { $0 != "null" }) ?? "null", types.count > 1 && types.contains("null")
+    )
+  }
+
+  private func schemaTypes(_ value: JSONValue?, at pointer: String) throws -> [String]? {
+    guard let value else { return nil }
+    if let type = value.string, Self.types.contains(type) { return [type] }
     if let values = value.array {
       let types = try values.enumerated().map { index, value in
         try string(value, at: child(pointer, String(index)))
@@ -778,13 +1115,9 @@ private struct SchemaEmitter {
       else {
         throw failure(pointer, "'type' must contain unique JSON Schema type names.")
       }
-      if types.count == 1 { return (types[0], false) }
-      if types.count == 2, types.contains("null"), let type = types.first(where: { $0 != "null" }) {
-        return (type, true)
-      }
-      throw failure(pointer, "Only a single type or a union of one type with 'null' is supported.")
+      return types
     }
-    throw failure(pointer, "Expected a JSON Schema type name or a nullable type array.")
+    throw failure(pointer, "Expected a JSON Schema type name or an array of type names.")
   }
 
   private func jsonLiteral(_ value: JSONValue, at pointer: String) throws -> ExprSyntax {
@@ -792,15 +1125,20 @@ private struct SchemaEmitter {
     case .string(let value):
       return SchemaSyntax.call(
         SchemaSyntax.member("string"), [SchemaSyntax.argument(SchemaSyntax.stringLiteral(value))])
-    case .integer(let value):
+    case .numberLiteral(let number):
+      if let integer = Int(number.rawValue), String(integer) == number.rawValue {
+        return SchemaSyntax.call(
+          SchemaSyntax.member("integer"), [SchemaSyntax.argument(ExprSyntax(literal: integer))])
+      }
+      if let double = Double(number.rawValue), double.isFinite,
+        try JSONNumberLiteral(double).rawValue == number.rawValue
+      {
+        return SchemaSyntax.call(
+          SchemaSyntax.member("number"), [SchemaSyntax.argument(ExprSyntax(literal: double))])
+      }
       return SchemaSyntax.call(
-        SchemaSyntax.member("integer"), [SchemaSyntax.argument(ExprSyntax(literal: value))])
-    case .number:
-      return SchemaSyntax.call(
-        SchemaSyntax.member("number"),
-        [
-          SchemaSyntax.argument(ExprSyntax(literal: try finiteNumber(value, at: pointer)))
-        ])
+        SchemaSyntax.member("numberLiteral"),
+        [SchemaSyntax.argument(exactNumberLiteral(number))])
     case .boolean(let value):
       return SchemaSyntax.call(
         SchemaSyntax.member("boolean"), [SchemaSyntax.argument(ExprSyntax(literal: value))])
@@ -838,22 +1176,34 @@ private struct SchemaEmitter {
     return flag
   }
 
-  private func finiteNumber(_ value: JSONValue, at pointer: String) throws -> Double {
-    let number: Double
-    switch value {
-    case .integer(let integer): number = Double(integer)
-    case .number(let double): number = double
-    default: throw failure(pointer, "Expected a finite number.")
-    }
-    guard number.isFinite else { throw failure(pointer, "Expected a finite number.") }
+  private func numberLiteral(_ value: JSONValue, at pointer: String) throws -> JSONNumberLiteral {
+    guard let number = value.numberLiteral else { throw failure(pointer, "Expected a number.") }
     return number
   }
 
-  private func nonnegativeInteger(_ value: JSONValue, at pointer: String) throws -> Int {
-    if case .integer(let integer) = value, integer >= 0 { return integer }
-    if case .number(let number) = value, let integer = Int(exactly: number), integer >= 0 {
-      return integer
+  private func numericArgument(_ number: JSONNumberLiteral) throws -> ExprSyntax {
+    if let double = Double(number.rawValue), double.isFinite,
+      try JSONNumberLiteral(double) == number
+    {
+      return ExprSyntax(literal: double)
     }
+    return exactNumberLiteral(number)
+  }
+
+  private func exactNumberLiteral(_ number: JSONNumberLiteral) -> ExprSyntax {
+    // The generator has already validated this token; reparsing cannot fail.
+    ExprSyntax(
+      TryExprSyntax(
+        questionOrExclamationMark: .exclamationMarkToken(),
+        expression: SchemaSyntax.call(
+          SchemaSyntax.reference("JSONNumberLiteral"),
+          [SchemaSyntax.argument(SchemaSyntax.stringLiteral(number.rawValue))]
+        )
+      ))
+  }
+
+  private func nonnegativeInteger(_ value: JSONValue, at pointer: String) throws -> Int {
+    if let integer = value.integer, integer >= 0 { return integer }
     throw failure(pointer, "Expected a nonnegative integer representable by Swift.Int.")
   }
 
@@ -881,11 +1231,13 @@ private struct SchemaEmitter {
   private static let identifierContinuation = identifierStart.union(
     CharacterSet(charactersIn: "0123456789")
   )
-  private static let types: Set<String> = [
+  private static let typeOrder = [
     "string", "integer", "number", "boolean", "null", "object", "array",
   ]
+  private static let types = Set(typeOrder)
   private static let nonnegativeIntegers: Set<String> = [
     "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
+    "minContains", "maxContains",
   ]
   private static let numericKeywords: Set<String> = [
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
@@ -897,13 +1249,30 @@ private struct SchemaEmitter {
   private static let keywordTypes: [String: Set<String>] = [
     "properties": ["object"], "required": ["object"], "additionalProperties": ["object"],
     "minProperties": ["object"], "maxProperties": ["object"],
+    "patternProperties": ["object"], "propertyNames": ["object"],
+    "dependentRequired": ["object"], "dependentSchemas": ["object"],
+    "unevaluatedProperties": ["object"],
     "items": ["array"], "minItems": ["array"], "maxItems": ["array"], "uniqueItems": ["array"],
+    "prefixItems": ["array"], "contains": ["array"], "minContains": ["array"],
+    "maxContains": ["array"], "unevaluatedItems": ["array"],
     "minLength": ["string"], "maxLength": ["string"], "pattern": ["string"], "format": ["string"],
     "minimum": ["number", "integer"], "maximum": ["number", "integer"],
     "exclusiveMinimum": ["number", "integer"], "exclusiveMaximum": ["number", "integer"],
     "multipleOf": ["number", "integer"],
   ]
+  private static let validationOnlyKeywords: Set<String> = [
+    "patternProperties", "propertyNames", "dependentRequired", "dependentSchemas",
+    "prefixItems", "contains", "minContains", "maxContains", "unevaluatedProperties",
+    "unevaluatedItems", "if", "then", "else", "contentEncoding", "contentMediaType",
+    "contentSchema", "$vocabulary",
+  ]
+  private static let standardVocabularies = Set(
+    [
+      "core", "applicator", "unevaluated", "validation", "meta-data", "format-annotation",
+      "format-assertion", "content",
+    ].map { "https://json-schema.org/draft/2020-12/vocab/" + $0 })
   private static let supportedKeywords = Set(keywordTypes.keys)
     .union(commonModifierKeywords)
+    .union(validationOnlyKeywords)
     .union(["type", "allOf", "anyOf", "oneOf", "not"])
 }

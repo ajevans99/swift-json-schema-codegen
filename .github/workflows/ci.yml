@@ -27,3 +27,9 @@ jobs:
         run: bash Tests/CLI/smoke.sh
       - name: OpenAPI generated consumer
         run: bash Tests/OpenAPI/smoke.sh
+      - name: Named-model generated consumers
+        run: bash Tests/NamedModels/smoke.sh
+      - name: Named-model entry points
+        run: bash Tests/NamedModels/entry-points.sh
+      - name: Official meta-schema consumer
+        run: bash Tests/MetaSchema/smoke.sh
