@@ -203,6 +203,7 @@ for raw in ["draft", "in-progress", "done"] {
   let legacy: String = tuples.status
   precondition(Array(models.status.rawValue.unicodeScalars) == Array(legacy.unicodeScalars))
 }
+// Swift 6.3.3 crashes in SILGenCleanup for redundant typed-throws `catch is` patterns.
 for source in [
   #"{"payload":{"text":"parsed"},"choice":"yes","status":"missing"}"#,
   #"{"payload":{"text":"parsed"},"choice":"yes","status":null}"#,
@@ -213,11 +214,15 @@ for source in [
   do {
     _ = try ThemeSchema.schema.parseAndValidate(value)
     fatalError("Named CLI enum accepted invalid input")
-  } catch is ParseAndValidateIssue {}
+  } catch {
+    let _: ParseAndValidateIssue = error
+  }
   do {
     _ = try ThemeSchemaTuples.schema.parseAndValidate(value)
     fatalError("Tuple CLI enum accepted invalid input")
-  } catch is ParseAndValidateIssue {}
+  } catch {
+    let _: ParseAndValidateIssue = error
+  }
 }
 print("Compiled CLI model names passed.")
 SWIFT
