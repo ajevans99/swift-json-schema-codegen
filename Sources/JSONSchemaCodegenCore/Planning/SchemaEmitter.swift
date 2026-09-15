@@ -16,6 +16,9 @@ struct SchemaEmitter {
   private var nextUnion = 0
   private var unionNames: [[SchemaOutput]: String] = [:]
   private var includesValidationHelper = false
+  private var includesUnknownPropertiesHelper = false
+  private var validationLiteralCount = 0
+  private var parserFactoryCount = 0
   private var usesSharedModels = false
   private let allowsUnmatchedOverrides: Bool
   private(set) var usedTypeOverrides = Set<String>()
@@ -129,6 +132,11 @@ struct SchemaEmitter {
 
   private mutating func fragments(_ nodes: [ResolvedSchema]) throws -> [SchemaFragment] {
     let node = nodes[0]
+    if options.unknownProperties == .preserve, options.output != .models {
+      throw failure(
+        node.location.pointer,
+        "Preserving unknown properties requires named models or shared generation.")
+    }
     if options.output == .tuples,
       !options.names.typeNames.isEmpty || !options.names.caseNames.isEmpty
     {
@@ -173,6 +181,21 @@ struct SchemaEmitter {
   }
 
   private mutating func plan(_ node: ResolvedSchema) throws -> SchemaFragment {
+    let fragment = try inlinePlan(node)
+    // Inspect only a bounded prefix, rather than repeatedly traversing entire subtrees.
+    guard usesSharedModels,
+      fragment.expression.tokens(viewMode: .sourceAccurate).enumerated()
+        .contains(where: { $0.offset == 512 })
+    else { return fragment }
+    parserFactoryCount += 1
+    let name = SchemaModelNames.helperPrefix + "Parser\(parserFactoryCount)"
+    declarations.append(SchemaParserFactorySyntax.declaration(name, fragment: fragment))
+    return SchemaFragment(
+      expression: SchemaSyntax.call(SchemaSyntax.member(SchemaSyntax.reference("Self"), name)),
+      outputType: fragment.outputType)
+  }
+
+  private mutating func inlinePlan(_ node: ResolvedSchema) throws -> SchemaFragment {
     do {
       visitedNodes += 1
       guard visitedNodes <= 10_000 else {
@@ -294,7 +317,35 @@ struct SchemaEmitter {
   private mutating func applyingValidation(
     _ generated: SchemaFragment, from node: ResolvedSchema
   ) throws -> SchemaFragment {
-    let schema = try jsonLiteral(node.validationValue, at: node.location.pointer)
+    let value = node.validationValue
+    let schema: ExprSyntax
+    let serialized = usesSharedModels ? try value.serialized() : nil
+    if let serialized, serialized.utf8.count > 4_096 {
+      // Large validation literals need one syntax node, not an arena per JSON scalar.
+      // Round-trip exact source bytes, including number tokens and Unicode scalars.
+      let restored = try JSONValue.parse(serialized)
+      guard try restored.serialized().utf8.elementsEqual(serialized.utf8) else {
+        throw failure(node.location.pointer, "Validation schema did not serialize losslessly.")
+      }
+      validationLiteralCount += 1
+      let name = SchemaModelNames.helperPrefix + "Definition\(validationLiteralCount)"
+      declarations.append(
+        """
+        private static let \(raw: name): SchemaValue = {
+          do {
+            guard case .object(let object) = try JSONValue.parse(\(SchemaSyntax.stringLiteral(serialized))) else {
+              preconditionFailure("Invalid generated validation schema: expected an object.")
+            }
+            return .object(object)
+          } catch {
+            preconditionFailure("Invalid generated validation schema: \\(error)")
+          }
+        }()
+        """)
+      schema = SchemaSyntax.reference(name)
+    } else {
+      schema = try jsonLiteral(value, at: node.location.pointer)
+    }
     if !includesValidationHelper {
       includesValidationHelper = true
       declarations.append(SchemaSyntax.validationHelper)
@@ -527,7 +578,7 @@ struct SchemaEmitter {
       guard let branches = union.value.object?[keyword]?.array else {
         throw failure(union.location.pointer, "Missing union branches.")
       }
-      var siblings = nodes
+      var siblings = nodes.map(removingUnevaluatedKeywords)
       siblings.remove(at: unionIndex)
       var ownSiblings = removingUnevaluatedKeywords(union)
       if var object = ownSiblings.value.object {
@@ -535,6 +586,13 @@ struct SchemaEmitter {
         ownSiblings.value = .object(object)
       }
       if ownSiblings.value != .object([:]) { siblings.append(ownSiblings) }
+      // Annotations stay in the original validation definition, not in branch model identities.
+      siblings.removeAll { sibling in
+        guard sibling.reference == nil, sibling.refinements.isEmpty,
+          let object = sibling.value.object
+        else { return false }
+        return object.keys.allSatisfy { !Self.projectionSignificantKeywords.contains($0) }
+      }
       guard !siblings.isEmpty else { return union }
       var projected = ResolvedSchema(
         value: .object([keyword: .array(branches)]),
@@ -1042,6 +1100,9 @@ struct SchemaEmitter {
 
   private mutating func objectPlan(_ node: ResolvedSchema) throws -> SchemaFragment {
     let object = SchemaParsingPlan.Object(node)
+    let preservesUnknown =
+      options.unknownProperties == .preserve
+      && (!object.properties.isEmpty || object.additional == nil || object.preservesCoverage)
     var expressions: [ExprSyntax] = []
     var fields: [SchemaOutput.Field] = []
     var modelFields: [SchemaModelGraph.Field] = []
@@ -1090,7 +1151,7 @@ struct SchemaEmitter {
         closure: ClosureExprSyntax(statements: [
           CodeBlockItemSyntax(leadingTrivia: .newline, item: .expr(generated.expression))
         ]))
-      if options.output == .tuples || fields.isEmpty {
+      if options.output == .tuples || fields.isEmpty && !preservesUnknown {
         expression = SchemaSyntax.additionalPropertiesMap(
           expression, hasProperties: !fields.isEmpty
         )
@@ -1103,7 +1164,7 @@ struct SchemaEmitter {
           .init(name: "properties", type: outputType),
           .init(name: "additionalProperties", type: dictionary),
         ])
-      if !fields.isEmpty {
+      if !fields.isEmpty || preservesUnknown {
         let labels = Set(fields.map(\.name))
         var name = "additionalProperties"
         var suffix = 2
@@ -1114,11 +1175,32 @@ struct SchemaEmitter {
         modelFields.append(.init(key: nil, name: name, type: dictionary, absent: false))
       }
     }
-    if options.output == .models, !fields.isEmpty || object.additional == nil {
+    if preservesUnknown {
+      if !includesUnknownPropertiesHelper {
+        includesUnknownPropertiesHelper = true
+        declarations.append(SchemaUnknownPropertiesSyntax.declaration)
+      }
+      expression = SchemaUnknownPropertiesSyntax.preserving(
+        expression, keys: modelFields.compactMap(\.key), hasAdditional: object.additional != nil)
+      let labels = Set(modelFields.map(\.name))
+      var name = "unmodeledProperties"
+      var suffix = 2
+      while labels.contains(name) {
+        name = "unmodeledProperties_\(suffix)"
+        suffix += 1
+      }
+      modelFields.append(
+        .init(
+          key: nil, name: name, type: .dictionary("JSONValue"), absent: false,
+          unmodeled: true))
+    }
+    if options.output == .models,
+      !fields.isEmpty || object.additional == nil || preservesUnknown
+    {
       outputType = models.object(at: node, fields: modelFields)
       expression = SchemaModelSyntax.objectMap(
         expression, output: outputType, fields: modelFields,
-        hasAdditional: object.additional != nil && !fields.isEmpty)
+        hasAdditional: object.additional != nil && (!fields.isEmpty || preservesUnknown))
     }
     return SchemaFragment(expression: expression, outputType: outputType)
   }
@@ -1302,4 +1384,14 @@ struct SchemaEmitter {
     .union(commonModifierKeywords)
     .union(validationOnlyKeywords)
     .union(["type", "allOf", "anyOf", "oneOf", "not"])
+  private static let projectionSignificantKeywords =
+    supportedKeywords
+    .subtracting([
+      "title", "description", "$comment", "default", "examples", "readOnly", "writeOnly",
+      "deprecated",
+    ])
+    .union(SchemaKeywords.maps)
+    .union(SchemaKeywords.arrays)
+    .union(SchemaKeywords.singles)
+    .union(["$ref", "$dynamicRef", "$dynamicAnchor"])
 }

@@ -35,17 +35,27 @@ enum SchemaModelSyntax {
   ) -> ExprSyntax {
     // JSONObject yields raw fields; typed extras wrap them as (fields, matches).
     // Construct models directly rather than adding intermediate labeled-tuple maps.
-    let count = fields.count - (hasAdditional ? 1 : 0)
+    let preservesUnknown = fields.contains(where: \.unmodeled)
+    let count = fields.filter { $0.key != nil }.count
+    let parsed = SchemaSyntax.reference(parsedValueName)
+    let upstream = preservesUnknown ? SchemaSyntax.member(parsed, "0") : parsed
     let parameters = fields.enumerated().map { index, field in
       let value: ExprSyntax
-      if hasAdditional && index == fields.count - 1 {
-        value = SchemaSyntax.member(
-          SchemaSyntax.member(SchemaSyntax.reference(parsedValueName), "1"), "matches")
+      if field.unmodeled {
+        value = SchemaSyntax.member(parsed, "1")
+      } else if hasAdditional && field.key == nil {
+        let matches = SchemaSyntax.member(SchemaSyntax.member(upstream, "1"), "matches")
+        if preservesUnknown && count > 0 {
+          let keys = SchemaSyntax.array(fields.compactMap(\.key).map(SchemaSyntax.stringLiteral))
+          value = "\(matches).filter { !\(keys).contains($0.key) }"
+        } else {
+          value = matches
+        }
       } else {
         let base =
           hasAdditional
-          ? SchemaSyntax.member(SchemaSyntax.reference(parsedValueName), "0")
-          : SchemaSyntax.reference(parsedValueName)
+          ? SchemaSyntax.member(upstream, "0")
+          : upstream
         value = count == 1 ? base : SchemaSyntax.member(base, String(index))
       }
       return SchemaSyntax.argument(value, label: field.name == "inout" ? "`inout`" : field.name)
@@ -72,10 +82,10 @@ enum SchemaModelSyntax {
     graph: SchemaModelGraph, names: [String: String], cases: [String: String],
     layout: SchemaModelLayout, includesRootAlias: Bool = true
   ) throws -> [DeclSyntax] {
+    let rewriter = SchemaModelRewriter(names: names, cases: cases, references: [:])
     func type(_ output: SchemaOutput) throws -> TypeSyntax {
       let resolved = try graph.resolving(output)
-      return SchemaModelRewriter(names: names, cases: cases, references: [:])
-        .rewrite(resolved.syntax).cast(TypeSyntax.self)
+      return rewriter.rewrite(resolved.syntax).cast(TypeSyntax.self)
     }
     var declarations: [DeclSyntax] = []
     for id in graph.definitions.keys.sorted(by: { names[$0]! < names[$1]! }) {
@@ -113,13 +123,16 @@ enum SchemaModelSyntax {
             parameterClause: FunctionParameterClauseSyntax(
               parameters: FunctionParameterListSyntax(
                 try fields.enumerated().map { index, field in
-                  FunctionParameterSyntax(
+                  let defaultValue: InitializerClauseSyntax? =
+                    field.unmodeled
+                    ? InitializerClauseSyntax(value: SchemaSyntax.dictionary([]))
+                    : field.absent ? InitializerClauseSyntax(value: NilLiteralExprSyntax()) : nil
+                  return FunctionParameterSyntax(
                     firstName: SchemaSyntax.label(field.name),
                     secondName: field.name == parameterNames[field.name]
                       ? nil : .identifier(parameterNames[field.name]!),
                     type: try type(field.type),
-                    defaultValue: field.absent
-                      ? InitializerClauseSyntax(value: NilLiteralExprSyntax()) : nil,
+                    defaultValue: defaultValue,
                     trailingComma: index < fields.count - 1 ? .commaToken() : nil)
                 }))),
           body: CodeBlockSyntax(

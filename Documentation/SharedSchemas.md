@@ -71,6 +71,63 @@ aliases before allocating models. Choose an enclosing namespace and additional
 wrapper members that do not collide with the generated public declarations.
 An empty batch returns empty declarations and roots; mismatched counts are errors.
 
+Shared-mode validation definitions larger than 4 KiB use private immutable
+constants instead of one Swift syntax subtree per JSON scalar. Generation checks
+an exact serialized-byte round trip with OrderedJSON; the generated constant
+uses the existing `JSONValue.parse` once on first access and explicitly traps
+if its generator-authored payload is corrupted. The complete `SchemaValue`,
+including reference annotation scope, remains unchanged. This does not replace
+typed models with raw JSON or parse schema text on each request. Smaller literals
+and existing single-root/default output retain their previous representation.
+
+Oversized shared parser expressions are split structurally into private
+functions returning `some JSONSchemaComponent<ExactOutput>`. Each completed
+fragment gets its own factory; factories are not deduplicated by model name or
+schema equality. This bounds nested compiler constraint trees without changing
+the parser, validation definition, reference scope, or public model identities.
+The size check examines only a bounded token prefix. Small shared expressions
+and existing single-root/default output remain inline.
+
+## Preserving unmodeled object properties
+
+The default remains a schema-directed projection: modeled properties and
+schema-valued `additionalProperties` are retained, but other allowed keys are
+discarded. In particular, omitting `additionalProperties` or setting it to
+`true` does not enable storage by itself.
+
+Programmatic shared/named generation can opt in for the entire namespace:
+
+```swift
+let generator = SchemaGenerator(options: .init(unknownProperties: .preserve))
+let shared = try generator.generateShared(
+  document: document, schemaPointers: pointers, rootNames: names)
+```
+
+`SchemaGenerationOptions.unknownProperties` defaults to `.discard`; `.preserve`
+requires named output for single-root generation. Existing macro and CLI
+defaults are unchanged. The policy adds `unmodeledProperties: [String: JSONValue]`
+with an empty initializer default. Schema-declared name collisions receive a
+deterministic suffix such as `unmodeledProperties_2`.
+
+Typed `additionalProperties` retain their separate typed storage. The new
+dictionary stores only keys not already represented by modeled fields or typed
+extras, including pattern-matched keys without modeled fields. Pure typed
+dictionaries remain dictionaries when every key is already captured. Both
+dictionaries flatten into the JSON object; conflicting modeled, typed-extra,
+or unmodeled keys throw instead of overwriting data.
+
+The private capture adapter preserves its upstream `schemaValue` and parsing
+scope; it does not insert `additionalProperties` or change annotation coverage.
+Original references, compositions, patterns, and `unevaluatedProperties` still
+govern validation. As with other projections, use `parseAndValidate`, and
+validate encoded requests before transmission.
+
+Raw unmodeled `JSONValue` values retain exact number tokens and explicit nulls.
+This is not a promise that every modeled value round-trips lexically: declared
+`number` fields and typed numeric extras still use their existing `Double`
+representation and may round decimal values. The opt-in does not change that
+numeric policy.
+
 ## Sharing and naming
 
 Objects, finite string enums, and semantic unions share nominal types only by
@@ -78,6 +135,13 @@ canonical schema identity, including refinement and dynamic-reference
 specialization. A list's referenced item and a retrieve/create root referencing
 the same schema have the same Swift type. Distinct definitions with equal shapes
 remain distinct; shape-changing reference siblings remain specialized.
+
+Annotation-only reference siblings, including repeated descriptions and unknown
+metadata, do not specialize a union's referenced payload models. Their complete
+original annotations and validation definitions remain attached to each parser.
+This also applies inside nullable wrappers and to the existing single-root named
+output. Defaults remain annotations rather than supplying missing required
+values; discriminator metadata never changes `oneOf` validity.
 
 Names are allocated together from the existing model graph, provenance, and
 naming rules. Existing type/case overrides and explicit `.immutableClasses`

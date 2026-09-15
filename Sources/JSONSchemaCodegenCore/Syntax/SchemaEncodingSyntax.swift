@@ -147,10 +147,14 @@ struct SchemaEncodingSyntax {
           let keys = SchemaSyntax.array(fields.compactMap(\.key).map(SchemaSyntax.stringLiteral))
           let pointer = SchemaSyntax.stringLiteral(definition.provenance.origins[0].pointer)
           let encoded = try expression(item, value: "extra", provenance: definition.provenance)
+          let collisionCheck: ExprSyntax =
+            fields.filter { $0.key == nil }.count > 1
+            ? "!\(keys).contains(key) && object[key] == nil"
+            : "!\(keys).contains(key)"
           statements.append(
             """
             for (key, extra) in value.\(raw: "`\(field.name)`").sorted(by: { $0.key < $1.key }) {
-              guard !\(keys).contains(key) else {
+              guard \(collisionCheck) else {
                 throw _JSONSchemaCodegenEncodingError(
                   pointer: \(pointer),
                   message: "Additional property collides with a modeled JSON key: " + key)

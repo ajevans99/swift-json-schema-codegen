@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "Leaf": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "unmodeledProperties": {"type": "string"}
+      },
+      "required": ["id"],
+      "patternProperties": {"^meta_": {"type": ["number", "null"]}}
+    }
+  },
+  "nested": {
+    "type": "object",
+    "properties": {
+      "id": {"type": "string"},
+      "leaf": {"$ref": "#/$defs/Leaf"},
+      "leaves": {"type": "array", "items": {"$ref": "#/$defs/Leaf"}}
+    },
+    "required": ["id", "leaf", "leaves"]
+  },
+  "booleanExtras": {
+    "type": "object",
+    "properties": {"id": {"type": "string"}},
+    "required": ["id"],
+    "additionalProperties": true
+  },
+  "patternTyped": {
+    "type": "object",
+    "properties": {"id": {"type": "string"}},
+    "required": ["id", "ghost"],
+    "patternProperties": {"^pattern_": {"type": ["number", "null"]}},
+    "additionalProperties": {"type": "integer"}
+  },
+  "typedOnly": {
+    "type": "object",
+    "patternProperties": {"^raw_": true},
+    "additionalProperties": {"type": "integer"}
+  },
+  "composed": {
+    "allOf": [
+      {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+      {"type": "object", "properties": {"b": {"type": "integer"}}, "required": ["b"]}
+    ],
+    "unevaluatedProperties": {"type": ["string", "null"]}
+  },
+  "strict": {
+    "$ref": "#/$defs/Leaf",
+    "unevaluatedProperties": false
+  },
+  "forbidden": {
+    "type": "object",
+    "properties": {"id": {"type": "string"}},
+    "required": ["id"],
+    "additionalProperties": false
+  },
+  "union": {
+    "anyOf": [{"$ref": "#/$defs/Leaf"}, {"type": "string"}]
+  }
+}

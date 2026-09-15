@@ -161,9 +161,33 @@ try check(strict.extra && !strict.children[0].extra, "Dynamic specialization los
 try check(
   try SharedDynamicSchemas.encodeStrictTree(strict) == strictJSON,
   "Specialized dynamic-reference encoding failed.")
+let initializationStart = ContinuousClock.now
+let largeValidation = SharedUntypedSchemas.schemaRetrieve.schemaValue
+print("Large validation constant cold initialization: \(initializationStart.duration(to: .now))")
 try check(
-  SharedUntypedSchemas.schemaRetrieve.schemaValue == LegacyUntypedSchema.schema.schemaValue,
+  largeValidation == LegacyUntypedSchema.schema.schemaValue,
   "Untyped object projection changed the original validation schema.")
+try check(
+  try largeValidation.value.serialized().utf8.elementsEqual(
+    LegacyUntypedSchema.schema.schemaValue.value.serialized().utf8),
+  "Large validation literal changed exact JSON bytes, Unicode scalars, or number tokens.")
+try check(
+  largeValidation == SharedUntypedSchemas.schemaEscaped.schemaValue,
+  "Escaped reference changed the large validation literal.")
+let literalValues = largeValidation["x-literals"]!.array!
+for (index, expected) in ["1e400", "1e-400", "0.123456789012345678901", "1.00", "-0"].enumerated() {
+  try check(
+    literalValues[index].numberLiteral?.rawValue == expected,
+    "Large validation constant rounded an exact number token.")
+}
+for (index, expected) in [
+  "é", "e\u{301}", "quote\"\u{301} slash\\\u{301} \r\n\t\u{0}",
+  "\\(notInterpolation)\"###",
+].enumerated() {
+  try check(
+    literalValues[index + 7].string!.unicodeScalars.elementsEqual(expected.unicodeScalars),
+    "Large validation constant changed string escaping or Unicode scalars.")
+}
 try check(
   SharedUntypedSchemas.schemaStrict.schemaValue == LegacyUntypedStrictSchema.schema.schemaValue,
   "Untyped object projection changed reference-sibling annotation scope.")
@@ -239,3 +263,6 @@ try rejectsEncoding { try SharedUntypedSchemas.encodeRetrieve(.nonObject(.object
 print(
   "Shared-model cross-module construction, parsing, encoding, identity, and rejection checks passed."
 )
+try verifyUnknownProperties()
+try verifyParserFactories()
+try verifyUnionReferences()

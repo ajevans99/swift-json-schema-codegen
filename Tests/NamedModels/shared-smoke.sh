@@ -11,6 +11,9 @@ mkdir -p "$work/Sources/GeneratedModels" "$work/Sources/NamedModelConsumer"
 trap 'rm -rf -- "$work"' EXIT
 cp "$root/Tests/NamedModels/Consumer/Package.swift" "$work/Package.swift"
 cp "$root/Tests/NamedModels/Consumer/SharedMain.swift" "$work/Sources/NamedModelConsumer/main.swift"
+cp "$root/Tests/NamedModels/Consumer/UnknownProperties.swift" "$work/Sources/NamedModelConsumer/"
+cp "$root/Tests/NamedModels/Consumer/ParserFactories.swift" "$work/Sources/NamedModelConsumer/"
+cp "$root/Tests/NamedModels/Consumer/UnionReferences.swift" "$work/Sources/NamedModelConsumer/"
 swift run --package-path "$root/Tests/NamedModels" GenerateNamedModels \
   "$work/Sources/GeneratedModels" --shared-only
 swift run --package-path "$work" --scratch-path "$root/.build/shared-model-consumer" NamedModelConsumer
