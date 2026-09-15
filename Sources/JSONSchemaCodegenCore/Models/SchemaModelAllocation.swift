@@ -8,7 +8,7 @@ struct SchemaModelAllocation {
 
   init(
     graph: SchemaModelGraph, options: SchemaGenerationOptions, namespace: String?,
-    allowsUnmatchedOverrides: Bool = false
+    allowsUnmatchedOverrides: Bool = false, sharedRootNames: Set<String>? = nil
   ) throws {
     var usedTypes = Set<String>()
     var usedCases = Set<String>()
@@ -50,7 +50,11 @@ struct SchemaModelAllocation {
     }
 
     let rootID: String?
-    if case .model(let id) = try graph.resolving(graph.root) { rootID = id } else { rootID = nil }
+    if sharedRootNames == nil, case .model(let id) = try graph.resolving(graph.root) {
+      rootID = id
+    } else {
+      rootID = nil
+    }
     var requests: [SchemaModelNameRequest] = []
     var explicitTypes = Set<String>()
     for id in graph.definitions.keys.sorted() {
@@ -73,6 +77,10 @@ struct SchemaModelAllocation {
       }
     }
     var reserved: Set<String> = ["Value", "schema", "_schemaWithDefinition"]
+    if let sharedRootNames {
+      reserved.formUnion(sharedRootNames)
+      reserved.formUnion(sharedRootNames.map { "encode" + $0 })
+    }
     if let namespace { reserved.insert(namespace) }
     var names = try SchemaModelNames.typeNames(for: requests, reserved: reserved)
     if let rootID { names[rootID] = "Value" }

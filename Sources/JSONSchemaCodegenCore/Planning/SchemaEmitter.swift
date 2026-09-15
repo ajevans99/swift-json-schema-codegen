@@ -16,6 +16,7 @@ struct SchemaEmitter {
   private var nextUnion = 0
   private var unionNames: [[SchemaOutput]: String] = [:]
   private var includesValidationHelper = false
+  private var usesSharedModels = false
   private let allowsUnmatchedOverrides: Bool
   private(set) var usedTypeOverrides = Set<String>()
   private(set) var usedCaseOverrides = Set<String>()
@@ -30,18 +31,119 @@ struct SchemaEmitter {
   }
 
   mutating func generate(_ node: ResolvedSchema) throws -> GeneratedSchemaSyntax {
+    var result = try fragments([node])[0]
+    if options.output == .models {
+      models.root = result.outputType
+      models.rootProvenance = SchemaModelGraph.provenance(node)
+      let layout = try SchemaModelLayout(graph: models, strategy: options.recursiveObjects)
+      let allocation = try SchemaModelAllocation(
+        graph: models, options: options, namespace: namespace,
+        allowsUnmatchedOverrides: allowsUnmatchedOverrides)
+      let rewriter = try modelRewriter(allocation)
+      declarations =
+        try SchemaModelSyntax.declarations(
+          graph: models, names: allocation.names, cases: allocation.cases, layout: layout
+        ) + declarations.map { rewriter.rewrite($0).cast(DeclSyntax.self) }
+      result = SchemaFragment(
+        expression: rewriter.rewrite(result.expression).cast(ExprSyntax.self),
+        outputType: .named("Value"))
+    }
+    return try SchemaSyntax.finish(result, declarations: declarations, at: node)
+  }
+
+  mutating func generateShared(_ nodes: [ResolvedSchema], rootNames: [String]) throws
+    -> GeneratedSharedSchemas
+  {
+    usesSharedModels = true
+    let reserved: Set<String> = ["schema", "_schemaWithDefinition"]
+    _ = try SchemaModelNames.typeNames(
+      for: zip(nodes, rootNames).enumerated().map { index, pair in
+        guard isSchemaOverrideIdentifier(pair.1) else {
+          throw failure(pair.0.location.pointer, "Invalid shared root name '\(pair.1)'.")
+        }
+        return SchemaModelNameRequest(
+          id: "root:\(index)", preferredName: pair.1, explicitName: pair.1,
+          pointer: pair.0.location.pointer, documentURI: pair.0.documentURI)
+      },
+      reserved: reserved.union(rootNames.map { "encode" + $0 }))
+    let results = try fragments(nodes)
+    let layout = try SchemaModelLayout(graph: models, strategy: options.recursiveObjects)
+    let allocation = try SchemaModelAllocation(
+      graph: models, options: options, namespace: namespace,
+      sharedRootNames: Set(rootNames))
+    let rewriter = try modelRewriter(allocation)
+    var sharedDeclarations =
+      try SchemaModelSyntax.declarations(
+        graph: models, names: allocation.names, cases: allocation.cases,
+        layout: layout, includesRootAlias: false)
+      + declarations.map { rewriter.rewrite($0).cast(DeclSyntax.self) }
+    let encoding = SchemaEncodingSyntax(
+      graph: models, names: allocation.names, cases: allocation.cases)
+    sharedDeclarations += try encoding.declarations()
+    for (index, result) in results.enumerated() {
+      let output = rewriter.rewrite(try models.resolving(result.outputType).syntax)
+        .cast(TypeSyntax.self)
+      sharedDeclarations.append(
+        DeclSyntax("public typealias \(raw: rootNames[index]) = \(output)"))
+      sharedDeclarations.append(
+        try encoding.rootDeclaration(
+          name: rootNames[index], output: result.outputType,
+          provenance: SchemaModelGraph.provenance(nodes[index])))
+    }
+    var roots: [GeneratedSharedSchemaRoot] = []
+    var serializedDeclarations: [String] = []
+    for (index, result) in results.enumerated() {
+      let generated = try SchemaSyntax.finish(
+        .init(
+          expression: rewriter.rewrite(result.expression).cast(ExprSyntax.self),
+          outputType: .named(rootNames[index])),
+        declarations: index == 0 ? sharedDeclarations : [], at: nodes[index]
+      ).serialized()
+      roots.append(
+        .init(
+          name: rootNames[index], outputType: generated.outputType,
+          expression: generated.expression, encodingExpression: "Self.encode" + rootNames[index]))
+      if index == 0 { serializedDeclarations = generated.declarations }
+    }
+    return GeneratedSharedSchemas(
+      declarations: serializedDeclarations, roots: roots)
+  }
+
+  private mutating func modelRewriter(_ allocation: SchemaModelAllocation) throws
+    -> SchemaModelRewriter
+  {
+    usedTypeOverrides = allocation.usedTypeOverrides
+    usedCaseOverrides = allocation.usedCaseOverrides
+    let typeRewriter = SchemaModelRewriter(
+      names: allocation.names, cases: allocation.cases, references: [:])
+    let references = try models.referenceOutputs.mapValues {
+      typeRewriter.rewrite(try models.resolving($0).syntax).cast(TypeSyntax.self)
+    }
+    return SchemaModelRewriter(
+      names: allocation.names, cases: allocation.cases,
+      references: Dictionary(
+        uniqueKeysWithValues: references.map {
+          (SchemaModelNames.helperPrefix + "Output" + $0.key, $0.value)
+        }))
+  }
+
+  private mutating func fragments(_ nodes: [ResolvedSchema]) throws -> [SchemaFragment] {
+    let node = nodes[0]
     if options.output == .tuples,
       !options.names.typeNames.isEmpty || !options.names.caseNames.isEmpty
     {
       throw failure(node.location.pointer, "Name overrides require output: .models.")
     }
-    try checkSchema(node)
-    for name in node.recursiveDefinitions.keys.sorted() {
-      if let definition = node.recursiveDefinitions[name] { try checkSchema(definition) }
+    for node in nodes {
+      try checkSchema(node)
+      referenceDefinitions.merge(node.recursiveDefinitions) { first, _ in first }
     }
-    referenceDefinitions = node.recursiveDefinitions
+    for name in referenceDefinitions.keys.sorted() {
+      if let definition = referenceDefinitions[name] { try checkSchema(definition) }
+    }
     usedReferences = options.output == .models ? [] : Set(referenceDefinitions.keys)
-    var result = try plan(node)
+    var results: [SchemaFragment] = []
+    for node in nodes { results.append(try plan(node)) }
     var emittedReferences = Set<String>()
     while let name = usedReferences.subtracting(emittedReferences).sorted().first {
       guard let definition = referenceDefinitions[name] else {
@@ -64,38 +166,10 @@ struct SchemaEmitter {
         declarations.append(SchemaSyntax.recursiveFactory(name, expression: validated.expression))
       }
     }
-    if !node.recursiveDefinitions.isEmpty {
-      result = try applyingValidation(result, from: node)
+    for (index, node) in nodes.enumerated() where !node.recursiveDefinitions.isEmpty {
+      results[index] = try applyingValidation(results[index], from: node)
     }
-    if options.output == .models {
-      models.root = result.outputType
-      models.rootProvenance = SchemaModelGraph.provenance(node)
-      let layout = try SchemaModelLayout(graph: models, strategy: options.recursiveObjects)
-      let allocation = try SchemaModelAllocation(
-        graph: models, options: options, namespace: namespace,
-        allowsUnmatchedOverrides: allowsUnmatchedOverrides)
-      usedTypeOverrides = allocation.usedTypeOverrides
-      usedCaseOverrides = allocation.usedCaseOverrides
-      let typeRewriter = SchemaModelRewriter(
-        names: allocation.names, cases: allocation.cases, references: [:])
-      let references = try models.referenceOutputs.mapValues {
-        typeRewriter.rewrite(try models.resolving($0).syntax).cast(TypeSyntax.self)
-      }
-      let rewriter = SchemaModelRewriter(
-        names: allocation.names, cases: allocation.cases,
-        references: Dictionary(
-          uniqueKeysWithValues: references.map {
-            (SchemaModelNames.helperPrefix + "Output" + $0.key, $0.value)
-          }))
-      declarations =
-        try SchemaModelSyntax.declarations(
-          graph: models, names: allocation.names, cases: allocation.cases, layout: layout
-        ) + declarations.map { rewriter.rewrite($0).cast(DeclSyntax.self) }
-      result = SchemaFragment(
-        expression: rewriter.rewrite(result.expression).cast(ExprSyntax.self),
-        outputType: .named("Value"))
-    }
-    return try SchemaSyntax.finish(result, declarations: declarations, at: node)
+    return results
   }
 
   private mutating func plan(_ node: ResolvedSchema) throws -> SchemaFragment {
@@ -234,6 +308,32 @@ struct SchemaEmitter {
         ]),
       outputType: generated.outputType
     )
+  }
+
+  private mutating func untypedObject(_ node: ResolvedSchema) throws -> SchemaFragment {
+    var object = node
+    var definition = object.value.object!
+    definition["type"] = .string("object")
+    object.value = .object(definition)
+    object.modelProvenance = SchemaModelGraph.objectProjectionProvenance(node)
+    let projected = try plan(object)
+    let nonObject = ExprSyntax("JSONComposition.Not { JSONObject() }")
+    let (output, branches) = models.objectOrNonObject(
+      at: node, objectOutput: projected.outputType)
+    let body = [
+      SchemaModelSyntax.unionMap(
+        projected.expression, output: output, branch: branches[0], null: false),
+      SchemaModelSyntax.unionMap(
+        nonObject, output: output, branch: branches[1], null: false),
+    ]
+    return try applyingValidation(
+      .init(
+        expression: SchemaSyntax.call(
+          SchemaSyntax.member(SchemaSyntax.reference("JSONComposition"), "AnyOf"),
+          [SchemaSyntax.argument(SchemaSyntax.metatype(output.syntax), label: "into")],
+          body: body),
+        outputType: output),
+      from: node)
   }
 
   private mutating func union(_ node: ResolvedSchema, keyword: String) throws -> SchemaFragment {
@@ -742,6 +842,12 @@ struct SchemaEmitter {
     }
     guard let object = value.object else {
       throw failure(pointer, "Expected a schema object or boolean.")
+    }
+    if usesSharedModels, object["type"] == nil,
+      object["properties"] != nil || object["required"] != nil,
+      !SchemaParsingPlan.StringEnum.isApplicable(object["enum"])
+    {
+      return try untypedObject(node)
     }
     var (type, nullable) = try schemaType(object["type"], at: child(pointer, "type"))
     let stringEnum =

@@ -47,14 +47,21 @@ struct JSONSchemaCodegenPlugin: BuildToolPlugin {
       return outputDirectory.appendingPathComponent(outputName)
     }
 
+    var arguments = ["--output-directory", outputDirectory.path]
+    var inputFiles = inputs
+    if let configurationFile {
+      arguments.append(contentsOf: ["--config", configurationFile.path])
+      inputFiles.append(configurationFile)
+    }
+    arguments.append("--")
+    arguments.append(contentsOf: inputs.map(\.path))
+
     return [
       .buildCommand(
         displayName: "Generate JSON schemas for \(target.name)",
         executable: try context.tool(named: "JSONSchemaCodegenCLI").url,
-        arguments: ["--output-directory", outputDirectory.path]
-          + (configurationFile.map { ["--config", $0.path] } ?? [])
-          + ["--"] + inputs.map(\.path),
-        inputFiles: inputs + (configurationFile.map { [$0] } ?? []),
+        arguments: arguments,
+        inputFiles: inputFiles,
         outputFiles: outputs
       )
     ]

@@ -3,12 +3,23 @@
 ```sh
 bash Tests/NamedModels/smoke.sh
 bash Tests/NamedModels/entry-points.sh
+bash Tests/NamedModels/shared-smoke.sh
 ```
 
 The generator emits paired named and legacy schemas from the same fixtures.
 The script builds them as a separate `GeneratedModels` library and imports that
 library from an executable, so public types, initializers, and `Sendable`
 conformances must actually work across a module boundary.
+
+The focused shared smoke test exercises the opt-in
+`generateShared(document:schemaPointers:rootNames:)` API. It compiles list,
+retrieve, and create aliases sharing one model, then checks constructed
+model-to-JSON mappings, null/absence states, collision rejection, exact numeric
+tokens, Unicode string enums, and shared recursive/dynamic specializations.
+Untyped object-keyword schemas verify typed object/nonobject cases, rejection of
+invalid-object fallback, nonobject encoding guards, and exact validation-schema
+parity with legacy generation, including `unevaluatedProperties` reference siblings.
+See [Shared schemas](../../Documentation/SharedSchemas.md) for the API contract.
 
 The consumer exercises empty/singleton/nested objects, optional-null distinction,
 typed arrays/dictionaries/extras, required-only properties, arbitrary JSON field

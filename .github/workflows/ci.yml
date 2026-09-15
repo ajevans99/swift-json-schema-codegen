@@ -31,5 +31,7 @@ jobs:
         run: bash Tests/NamedModels/smoke.sh
       - name: Named-model entry points
         run: bash Tests/NamedModels/entry-points.sh
+      - name: Shared-model encoding consumer
+        run: bash Tests/NamedModels/shared-smoke.sh
       - name: Official meta-schema consumer
         run: bash Tests/MetaSchema/smoke.sh

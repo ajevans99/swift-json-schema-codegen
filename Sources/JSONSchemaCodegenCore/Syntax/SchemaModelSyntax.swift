@@ -70,7 +70,7 @@ enum SchemaModelSyntax {
 
   static func declarations(
     graph: SchemaModelGraph, names: [String: String], cases: [String: String],
-    layout: SchemaModelLayout
+    layout: SchemaModelLayout, includesRootAlias: Bool = true
   ) throws -> [DeclSyntax] {
     func type(_ output: SchemaOutput) throws -> TypeSyntax {
       let resolved = try graph.resolving(output)
@@ -183,6 +183,7 @@ enum SchemaModelSyntax {
         declarations.append(stringEnumDeclaration(name: name, values: values, cases: cases))
       }
     }
+    if !includesRootAlias { return declarations }
     if case .model(let id) = try graph.resolving(graph.root), names[id] == "Value" {
       return declarations
     }
