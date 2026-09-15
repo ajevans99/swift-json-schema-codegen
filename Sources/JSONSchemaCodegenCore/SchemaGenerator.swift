@@ -15,6 +15,21 @@ public struct GeneratedSchema: Equatable, Sendable {
   }
 }
 
+/// Multiple entry points whose models and helpers belong in one enclosing Swift namespace.
+public struct GeneratedSharedSchemas: Equatable, Sendable {
+  public let declarations: [String]
+  public let roots: [GeneratedSharedSchemaRoot]
+}
+
+/// A publicly nameable output, parser expression, and throwing model-to-JSON function reference.
+public struct GeneratedSharedSchemaRoot: Equatable, Sendable {
+  public let name: String
+  public let outputType: String
+  public let expression: String
+  /// A static function reference, `Self.encode<RootName>`, of type `(RootName) throws -> JSONValue`.
+  public let encodingExpression: String
+}
+
 /// A generation failure located by a JSON Pointer within the input schema.
 public struct SchemaGenerationError: Error, Equatable, Sendable, CustomStringConvertible {
   public let pointer: String
@@ -47,6 +62,33 @@ public struct SchemaGenerator: Sendable {
 
   public func generate(_ source: String) throws -> GeneratedSchema {
     try generateSyntax(source).serialized()
+  }
+
+  /// Generates named outputs and JSON mappings for roots in a shared namespace.
+  ///
+  /// This is an explicit opt-in to named models, regardless of `options.output`.
+  /// Root pointers address schemas within a raw JSON container; referenced JSON
+  /// Pointers are registered as schemas on demand. No OpenAPI normalization or I/O
+  /// is performed. Root names must be unique, nonreserved ASCII Swift identifiers.
+  /// Place all declarations and parser expressions in the same enclosing type.
+  public func generateShared(
+    document: SchemaDocument, schemaPointers: [String], rootNames: [String]
+  ) throws -> GeneratedSharedSchemas {
+    guard schemaPointers.count == rootNames.count else {
+      throw SchemaGenerationError(
+        pointer: "", message: "Shared schema pointers and root names must have equal counts.",
+        documentURI: document.retrievalURI)
+    }
+    guard !schemaPointers.isEmpty else {
+      return GeneratedSharedSchemas(declarations: [], roots: [])
+    }
+    var sharedOptions = options
+    sharedOptions.output = .models
+    let graph = try SchemaReferenceGraph(
+      documents: [document], schemaPointers: schemaPointers,
+      allowsUnindexedReferences: true)
+    var emitter = SchemaEmitter(options: sharedOptions)
+    return try emitter.generateShared(graph.schemas(at: schemaPointers), rootNames: rootNames)
   }
 
   package func generateSyntax(_ source: String, namespaceName: String? = nil) throws

@@ -13,10 +13,18 @@ struct Fixture {
 }
 
 func generateModels() throws {
-  guard CommandLine.arguments.count == 2 else {
-    throw HarnessError(description: "Usage: GenerateNamedModels <generated-source-directory>")
+  guard
+    CommandLine.arguments.count == 2
+      || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--shared-only")
+  else {
+    throw HarnessError(
+      description: "Usage: GenerateNamedModels <generated-source-directory> [--shared-only]")
   }
   let output = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+  if CommandLine.arguments.count == 3 {
+    try generateSharedModels(output: output)
+    return
+  }
   let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     .appendingPathComponent("../../Fixtures").standardizedFileURL
   let cases: [Fixture] = [

@@ -130,6 +130,7 @@ final class SchemaReferenceGraph {
 
   private let documents: [SchemaDocument]
   private let includeDocumentURI: Bool
+  private let allowsUnindexedReferences: Bool
   private var records: [SchemaLocation: Record] = [:]
   private var resources: [String: SchemaLocation] = [:]
   private var anchors: [Anchor: SchemaLocation] = [:]
@@ -140,10 +141,11 @@ final class SchemaReferenceGraph {
 
   init(
     documents: [SchemaDocument], includeDocumentURI: Bool = true,
-    schemaPointers: [String]? = nil
+    schemaPointers: [String]? = nil, allowsUnindexedReferences: Bool = false
   ) throws {
     self.documents = documents
     self.includeDocumentURI = includeDocumentURI
+    self.allowsUnindexedReferences = allowsUnindexedReferences
     var parsed: [JSONValue] = []
     for (index, document) in documents.enumerated() {
       let location = SchemaLocation(document: index, pointer: "")
@@ -171,8 +173,9 @@ final class SchemaReferenceGraph {
         let baseURI = documents[documentIndex].retrievalURI
         records[location] = Record(
           value: parsed[documentIndex], baseURI: baseURI, resource: location)
-        for pointer in schemaPointers {
+        for pointer in allowsUnindexedReferences ? schemaPointers.sorted() : schemaPointers {
           let target = SchemaLocation(document: documentIndex, pointer: pointer)
+          if allowsUnindexedReferences, !pointer.isEmpty, records[target] != nil { continue }
           let value = try value(at: pointer, in: parsed[documentIndex], reportingAt: target)
           try index(value, at: target, baseURI: baseURI, resource: location)
         }
@@ -193,6 +196,28 @@ final class SchemaReferenceGraph {
     try generation(at: SchemaLocation(document: 0, pointer: pointer))
   }
 
+  /// Resolve all entry points with one recursive-adapter identity space.
+  func schemas(at pointers: [String]) throws -> [ResolvedSchema] {
+    resolved.removeAll()
+    referenceNames.removeAll()
+    var roots: [String: ResolvedSchema] = [:]
+    for pointer in Set(pointers).sorted() {
+      roots[pointer] = try resolve(SchemaLocation(document: 0, pointer: pointer))
+    }
+    var definitions: [String: ResolvedSchema] = [:]
+    for (resolution, name) in referenceNames {
+      guard let definition = resolved[resolution] else {
+        throw failure(resolution.location, "Missing recursive schema definition.")
+      }
+      definitions[name] = definition.strippingIdentifiers()
+    }
+    return pointers.map { pointer in
+      var root = roots[pointer]!
+      root.recursiveDefinitions = definitions
+      return definitions.isEmpty ? root : root.strippingIdentifiers()
+    }
+  }
+
   private func generation(at location: SchemaLocation) throws -> ResolvedSchema {
     resolved.removeAll()
     referenceNames.removeAll()
@@ -210,13 +235,26 @@ final class SchemaReferenceGraph {
   private func value(
     at pointer: String, in document: JSONValue, reportingAt location: SchemaLocation
   ) throws -> JSONValue {
+    if pointer.isEmpty { return document }
     guard pointer.hasPrefix("/") else {
       throw failure(location, "Expected a nonempty JSON Pointer to a schema.")
     }
     var value = document
     for part in pointer.dropFirst().split(separator: "/", omittingEmptySubsequences: false) {
       let token = try pointerToken(String(part), at: location)
-      guard let next = value.object?[token] else {
+      let next: JSONValue?
+      if let object = value.object {
+        next = object[token]
+      } else if let array = value.array, !token.isEmpty,
+        token.utf8.allSatisfy({ (48...57).contains($0) }),
+        token == "0" || !token.hasPrefix("0"),
+        let index = Int(token), array.indices.contains(index)
+      {
+        next = array[index]
+      } else {
+        next = nil
+      }
+      guard let next else {
         throw failure(location, "Schema pointer does not exist in the document.")
       }
       value = next
@@ -540,6 +578,9 @@ final class SchemaReferenceGraph {
         throw failure(errorLocation, "Unresolved JSON Pointer in reference '\(reference)'.")
       }
       target = target.child(token)
+    }
+    if records[target] == nil, allowsUnindexedReferences {
+      try index(value, at: target, baseURI: records[root]!.baseURI, resource: root)
     }
     guard records[target] != nil else {
       throw failure(

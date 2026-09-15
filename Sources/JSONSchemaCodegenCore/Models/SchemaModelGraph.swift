@@ -28,6 +28,7 @@ struct SchemaModelGraph {
     let preferredName: String
     let provenance: SchemaModelProvenance
     let hasDiscriminator: Bool
+    var rejectsObjects = false
   }
 
   struct StringCase {
@@ -183,6 +184,44 @@ struct SchemaModelGraph {
         id: id, shape: .union(branches), provenance: provenance,
         preferredName: name, context: context))
     return (.model(id), branches.map(\.id))
+  }
+
+  mutating func objectOrNonObject(
+    at node: ResolvedSchema, objectOutput: SchemaOutput
+  ) -> (SchemaOutput, [String]) {
+    let provenance = Self.provenance(node)
+    let id = provenance.identity + "|objectOrNonObject"
+    let (name, context) = Self.naming(provenance, object: false, fallback: "Model")
+    if case .model(let payload) = objectOutput, let definition = definitions[payload] {
+      definitions[payload] = Definition(
+        id: definition.id, shape: definition.shape, provenance: definition.provenance,
+        preferredName: name + "Object", context: context)
+    }
+    let branches = [
+      Branch(
+        id: id + "|object", type: objectOutput, preferredName: "object",
+        provenance: Self.objectProjectionProvenance(node), hasDiscriminator: true),
+      Branch(
+        id: id + "|nonObject", type: .named("JSONValue"), preferredName: "nonObject",
+        provenance: provenance, hasDiscriminator: true, rejectsObjects: true),
+    ]
+    insert(
+      Definition(
+        id: id, shape: .union(branches), provenance: provenance,
+        preferredName: name, context: context))
+    return (.model(id), branches.map(\.id))
+  }
+
+  static func objectProjectionProvenance(_ node: ResolvedSchema) -> SchemaModelProvenance {
+    let provenance = provenance(node)
+    let suffix = node.value.object?["properties"] == nil ? "/required" : "/properties"
+    return .init(
+      identity: provenance.identity + "|objectProjection",
+      origins: provenance.origins.map {
+        .init(
+          pointer: $0.pointer + suffix, documentURI: $0.documentURI,
+          logicalDocument: $0.logicalDocument, resource: $0.resource + suffix)
+      })
   }
 
   private mutating func insert(_ definition: Definition) {

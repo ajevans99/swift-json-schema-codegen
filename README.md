@@ -13,6 +13,11 @@ Generated components parse and validate JSON into Swift values: primitives,
 labeled tuples, arrays, and enums, with opt-in named immutable models.
 Generation does not synthesize `Codable` conformance.
 
+For OpenAPI operation clients, see the separate
+[Swift OpenAPI Schema Codegen](https://github.com/ajevans99/swift-openapi-schema-codegen)
+package. OpenAPI document and HTTP policies are not part of this package's
+generic model generation.
+
 ## Requirements
 
 Swift 6.1 or later. Supports macOS 14, iOS 17, tvOS 17, watchOS 10,
@@ -607,6 +612,31 @@ resolution, use `generate(document, referencing: otherDocuments)`.
 For file-backed core inputs, a stable `logicalName` provides portable naming
 context without encoding a developer's checkout directory. The CLI and plugin
 provide this context automatically.
+
+### Shared roots and model encoding
+
+For multiple typed entry points in one namespace, opt into
+`generateShared(document:schemaPointers:rootNames:)`. It returns common
+`declarations` and ordered `roots`, each exposing `name`, `outputType`,
+`expression`, and `encodingExpression`. Root aliases and static
+`encode<RootName>(_:) throws -> JSONValue` functions are included.
+
+This API always uses named models and shares nominal types by canonical schema
+identity and specialization—not by structural equality. A list item and a
+retrieve/create root referencing the same model are directly interchangeable.
+It accepts schema pointers in any raw JSON container; OpenAPI normalization
+remains an integration concern.
+Schemas with object keywords but no explicit type expose typed `.object`
+payloads plus a disjoint `.nonObject(JSONValue)` case without narrowing their
+original validation schema.
+
+Encoding preserves modeled field names, absence versus null, semantic unions,
+Unicode string enums, and exact `JSONValue` number literals. Typed extra keys
+that collide with modeled fields throw; nonfinite `Double` values throw.
+No `Codable` conformance or new runtime dependency is generated. Existing
+single-root/default APIs are unchanged.
+See [Shared schemas and encoding](Documentation/SharedSchemas.md) for the full
+integration contract, limitations, and compiled cross-module verification.
 
 ## JSON Schema coverage and limits
 
