@@ -667,6 +667,8 @@ struct SchemaEmitter {
       projection.stringEnumProjection = stringEnum
     }
     if type == "object" {
+      projection.hasClosedObjectProjection =
+        nodes.contains(where: SchemaParsingPlan.Object.hasClosedPropertySet)
       var properties = JSONValue.object([:])
       var required: [JSONValue] = []
       var fields: [String: [ResolvedSchema]] = [:]
@@ -1102,7 +1104,7 @@ struct SchemaEmitter {
     let object = SchemaParsingPlan.Object(node)
     let preservesUnknown =
       options.unknownProperties == .preserve
-      && (!object.properties.isEmpty || object.additional == nil || object.preservesCoverage)
+      && object.capturesUnmodeledProperties
     var expressions: [ExprSyntax] = []
     var fields: [SchemaOutput.Field] = []
     var modelFields: [SchemaModelGraph.Field] = []

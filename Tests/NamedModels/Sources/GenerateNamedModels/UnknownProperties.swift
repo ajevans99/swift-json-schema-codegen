@@ -9,11 +9,15 @@ func generateUnknownPropertyModels(output: URL) throws {
     encoding: .utf8)
   let names = [
     "Leaf", "Nested", "BooleanExtras", "PatternTyped", "TypedOnly", "Composed", "Strict",
-    "Forbidden", "Union",
+    "Forbidden", "Union", "ClosedReference", "ClosedComposed", "EmptyClosed",
+    "PatternClosed", "PatternClosedReference", "PatternClosedComposed", "PatternOnlyClosed",
+    "PatternRestricted",
   ]
   let pointers = [
     "/$defs/Leaf", "/nested", "/booleanExtras", "/patternTyped", "/typedOnly", "/composed",
-    "/strict", "/forbidden", "/union",
+    "/strict", "/forbidden", "/union", "/closedReference", "/closedComposed", "/emptyClosed",
+    "/patternClosed", "/patternClosedReference", "/patternClosedComposed", "/patternOnlyClosed",
+    "/patternRestricted",
   ]
   for (namespace, strategy) in [
     ("PreservedUnknownSchemas", UnknownPropertyStrategy.preserve),

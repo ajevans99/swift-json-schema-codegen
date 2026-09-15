@@ -31,6 +31,8 @@ struct ResolvedSchema {
   var referenceApplication: SchemaReferenceApplication?
   var modelProvenance: SchemaModelProvenance?
   var stringEnumProjection: SchemaParsingPlan.StringEnum?
+  /// A conjunct forbids object keys outside its declared properties.
+  var hasClosedObjectProjection = false
 
   /// A self-contained validation schema, preserving conjunction boundaries.
   var validationValue: JSONValue {

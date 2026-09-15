@@ -116,6 +116,13 @@ dictionaries remain dictionaries when every key is already captured. Both
 dictionaries flatten into the JSON object; conflicting modeled, typed-extra,
 or unmodeled keys throw instead of overwriting data.
 
+An explicit `additionalProperties: false` with no nonempty `patternProperties`
+map omits unmodeled storage, including when that closed property set belongs to
+a reference or an `allOf` conjunct. Pattern-bearing objects retain storage for
+legal pattern-matched keys. This is a bounded property-coverage decision, not
+general schema satisfiability or `unevaluatedProperties` inference; other
+constraints still require validation.
+
 The private capture adapter preserves its upstream `schemaValue` and parsing
 scope; it does not insert `additionalProperties` or change annotation coverage.
 Original references, compositions, patterns, and `unevaluatedProperties` still

@@ -65,6 +65,7 @@ func verifyUnknownProperties() throws {
   try check(
     try PreservedUnknownSchemas.encodeUnion(union) == leaf,
     "Semantic union projection lost unmodeled object properties.")
+  try verifyClosedUnknownProperties()
   for (preservedSchema, defaultSchema) in [
     (
       PreservedUnknownSchemas.schemaNested.schemaValue,
@@ -81,6 +82,42 @@ func verifyUnknownProperties() throws {
     (
       PreservedUnknownSchemas.schemaStrict.schemaValue,
       DefaultUnknownSchemas.schemaStrict.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaForbidden.schemaValue,
+      DefaultUnknownSchemas.schemaForbidden.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaClosedReference.schemaValue,
+      DefaultUnknownSchemas.schemaClosedReference.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaClosedComposed.schemaValue,
+      DefaultUnknownSchemas.schemaClosedComposed.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaEmptyClosed.schemaValue,
+      DefaultUnknownSchemas.schemaEmptyClosed.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaPatternClosed.schemaValue,
+      DefaultUnknownSchemas.schemaPatternClosed.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaPatternClosedReference.schemaValue,
+      DefaultUnknownSchemas.schemaPatternClosedReference.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaPatternClosedComposed.schemaValue,
+      DefaultUnknownSchemas.schemaPatternClosedComposed.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaPatternOnlyClosed.schemaValue,
+      DefaultUnknownSchemas.schemaPatternOnlyClosed.schemaValue
+    ),
+    (
+      PreservedUnknownSchemas.schemaPatternRestricted.schemaValue,
+      DefaultUnknownSchemas.schemaPatternRestricted.schemaValue
     ),
   ] {
     try check(
@@ -123,4 +160,96 @@ func verifyUnknownProperties() throws {
         unmodeledProperties: ["extra": 2]))
   }
   print("Opt-in unknown-property preservation, validation scope, and collision checks passed.")
+}
+
+private func verifyClosedUnknownProperties() throws {
+  let closed = PreservedUnknownSchemas.Forbidden(id: "id")
+  let reference: PreservedUnknownSchemas.ClosedReference = closed
+  let composed = PreservedUnknownSchemas.ClosedComposed(id: "id")
+  let empty = PreservedUnknownSchemas.EmptyClosed()
+  let input = JSONValue.object(["id": "id"])
+  try check(
+    Mirror(reflecting: closed).children.compactMap(\.label) == ["id"]
+      && Mirror(reflecting: composed).children.compactMap(\.label) == ["id"]
+      && Mirror(reflecting: empty).children.isEmpty,
+    "A closed model still exposes unmodeled storage.")
+  try check(
+    try PreservedUnknownSchemas.encodeForbidden(closed) == input
+      && PreservedUnknownSchemas.encodeClosedReference(reference) == input
+      && PreservedUnknownSchemas.encodeClosedComposed(composed) == input
+      && PreservedUnknownSchemas.encodeEmptyClosed(empty) == .object([:]),
+    "Closed model construction encoded unexpected keys.")
+  let parsed = try PreservedUnknownSchemas.schemaClosedReference.parseAndValidate(input)
+  try check(
+    try PreservedUnknownSchemas.encodeForbidden(parsed) == input, "Closed reference changed.")
+  _ = try PreservedUnknownSchemas.schemaClosedComposed.parseAndValidate(input)
+  _ = try PreservedUnknownSchemas.schemaEmptyClosed.parseAndValidate(.object([:]))
+  for schema in [
+    PreservedUnknownSchemas.schemaForbidden.schemaValue,
+    PreservedUnknownSchemas.schemaClosedReference.schemaValue,
+    PreservedUnknownSchemas.schemaClosedComposed.schemaValue,
+  ] {
+    try check(
+      !Schema(rawSchema: schema.value, context: Context(dialect: .draft2020_12))
+        .validate(.object(["id": "id", "future": .null])).isValid,
+      "Original closed validation was weakened.")
+  }
+  try rejectsUnknownParsing(
+    PreservedUnknownSchemas.schemaClosedReference, .object(["id": "id", "future": .null]))
+  try rejectsUnknownParsing(
+    PreservedUnknownSchemas.schemaForbidden, .object(["id": "id", "future": .null]))
+  try rejectsUnknownParsing(PreservedUnknownSchemas.schemaEmptyClosed, .object(["future": .null]))
+  try rejectsUnknownParsing(
+    PreservedUnknownSchemas.schemaClosedComposed, .object(["id": "x"]))
+
+  let patternInput = try JSONValue.parse(
+    """
+    {"id":"id","raw_required":123456789012345678901234567890,
+     "raw_decimal":1.0000000000000000001,"raw_nested":{"huge":1e400,"null":null}}
+    """)
+  let pattern = try PreservedUnknownSchemas.schemaPatternClosed.parseAndValidate(patternInput)
+  let patternReference: PreservedUnknownSchemas.PatternClosedReference = pattern
+  try check(
+    try PreservedUnknownSchemas.encodePatternClosedReference(patternReference) == patternInput,
+    "Closing additional properties lost legal pattern-matched values.")
+  let patternAnnotated = try PreservedUnknownSchemas.schemaPatternClosedReference
+    .parseAndValidate(patternInput)
+  try check(
+    try PreservedUnknownSchemas.encodePatternClosed(patternAnnotated) == patternInput,
+    "Annotated pattern references changed nominal identity or data.")
+  let patternComposed = try PreservedUnknownSchemas.schemaPatternClosedComposed
+    .parseAndValidate(patternInput)
+  try check(
+    try PreservedUnknownSchemas.encodePatternClosedComposed(patternComposed) == patternInput,
+    "Composed pattern coverage lost allowed unmodeled properties.")
+  let patternOnlyInput = JSONValue.object(["raw_nested": patternInput])
+  let patternOnly = try PreservedUnknownSchemas.schemaPatternOnlyClosed
+    .parseAndValidate(patternOnlyInput)
+  try check(
+    try PreservedUnknownSchemas.encodePatternOnlyClosed(patternOnly) == patternOnlyInput,
+    "Property-free pattern coverage lost allowed unmodeled properties.")
+  try rejectsUnknownParsing(
+    PreservedUnknownSchemas.schemaPatternClosed,
+    .object(["id": "id", "raw_required": .null, "forbidden": .null]))
+  let restricted = try PreservedUnknownSchemas.schemaPatternRestricted
+    .parseAndValidate(.object(["id": "id", "raw_required": .null]))
+  try check(
+    !Mirror(reflecting: restricted).children.contains { $0.label == "unmodeledProperties" },
+    "A closed conjunct acquired storage from another conjunct's patterns.")
+  try check(
+    try PreservedUnknownSchemas.encodePatternRestricted(restricted)
+      == .object(["id": "id", "raw_required": .null]),
+    "A closed conjunct lost allowed required-only fields.")
+  try rejectsUnknownParsing(PreservedUnknownSchemas.schemaPatternRestricted, patternInput)
+}
+
+private func rejectsUnknownParsing(_ schema: some JSONSchemaComponent, _ value: JSONValue) throws {
+  do {
+    _ = try schema.parseAndValidate(value)
+  } catch ParseAndValidateIssue.validationFailed(_),
+    ParseAndValidateIssue.parsingAndValidationFailed(_, _)
+  {
+    return
+  }
+  throw SharedFailure(message: "Invalid closed-object input unexpectedly parsed.")
 }
