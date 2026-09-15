@@ -1,7 +1,6 @@
 # Output types and schema support
 
-This guide describes the development version on `main`. See the
-[README](../README.md) for installation.
+See the [README](../README.md) for installation.
 
 ## Output types
 

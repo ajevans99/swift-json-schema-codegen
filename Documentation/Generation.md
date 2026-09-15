@@ -1,7 +1,7 @@
 # Generation guide
 
-This guide covers the development version on `main`. Start with the
-[README](../README.md) for installation and a working inline-schema example.
+Start with the [README](../README.md) for installation and a working inline-schema
+example.
 
 ## CLI
 

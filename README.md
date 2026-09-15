@@ -19,16 +19,13 @@ Requires **Swift 6.1 or later**. Deployment targets are macOS 14, iOS 17, tvOS 1
 watchOS 10, Mac Catalyst 17, and visionOS 1 or later. The CLI and generation core
 also support Linux.
 
-**This README describes `main`, including unreleased features.** Named models,
-typed string enums, and shared-root encoding are not in the latest tagged
-release, [0.2.0](https://github.com/ajevans99/swift-json-schema-codegen/releases/tag/v0.2.0).
-To use the examples below, add the development branch to `Package.swift`:
+Add the package dependency to `Package.swift`:
 
 ```swift
 dependencies: [
   .package(
     url: "https://github.com/ajevans99/swift-json-schema-codegen.git",
-    branch: "main"
+    from: "0.2.0"
   )
 ]
 ```
@@ -39,9 +36,7 @@ Then add the library to your target's dependencies:
 .product(name: "JSONSchemaCodegen", package: "swift-json-schema-codegen")
 ```
 
-SwiftPM resolves the JSON Schema runtime dependency automatically. For a tagged
-release instead, use `from: "0.2.0"` and follow the
-[0.2.0 documentation](https://github.com/ajevans99/swift-json-schema-codegen/blob/v0.2.0/README.md).
+SwiftPM resolves the JSON Schema runtime dependency automatically.
 
 ## Quick start
 
