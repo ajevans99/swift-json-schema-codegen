@@ -70,11 +70,11 @@ private func generateUntypedObjects(output: URL) throws {
     """##
   let source = """
     {
-      "components":{"schemas":{"Model":\(model),"Mirror/~":{"$ref":"#/components/schemas/Model"}}},
-      "retrieve":{"$ref":"#/components/schemas/Model"},
-      "list":{"type":"array","items":{"$ref":"#/components/schemas/Model"}},
-      "strict":{"$ref":"#/components/schemas/Model","unevaluatedProperties":false},
-      "escaped":{"$ref":"#/components/schemas/Mirror~1~0"}
+      "$defs":{"Model":\(model),"Mirror/~":{"$ref":"#/$defs/Model"}},
+      "retrieve":{"$ref":"#/$defs/Model"},
+      "list":{"type":"array","items":{"$ref":"#/$defs/Model"}},
+      "strict":{"$ref":"#/$defs/Model","unevaluatedProperties":false},
+      "escaped":{"$ref":"#/$defs/Mirror~1~0"}
     }
     """
   let generated = try SchemaGenerator().generateShared(

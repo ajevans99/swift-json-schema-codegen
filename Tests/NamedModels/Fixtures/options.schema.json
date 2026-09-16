@@ -1,0 +1,18 @@
+{
+  "$ref": "#/$defs/Envelope",
+  "$defs": {
+    "Envelope": {
+    "type": "object",
+    "properties": {
+      "payload": {
+        "type": "object",
+        "properties": {"number": {"type": "integer"}},
+        "required": ["number"]
+      },
+      "result": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+      "status": {"type": "string", "enum": ["draft", "in-progress", "done"]}
+    },
+    "required": ["payload", "result", "status"]
+    }
+  }
+}

@@ -157,31 +157,6 @@ The core performs no file or network I/O. Failures are `SchemaGenerationError`
 values with a `pointer`, `message`, and optional `documentURI`. SwiftSyntax is
 used during generation, not at runtime by the generated schemas.
 
-### OpenAPI components
-
-`OpenAPISchemaGenerator` accepts OpenAPI 3.1 JSON documents and generates their
-`components.schemas`, preserving component names and order:
-
-```swift
-import Foundation
-import JSONSchemaCodegenCore
-
-let url = URL(fileURLWithPath: "style-api.openapi.json")
-let components = try OpenAPISchemaGenerator(options: .init(output: .models))
-  .generateComponents(
-    in: SchemaDocument(
-      source: try String(contentsOf: url, encoding: .utf8),
-      retrievalURI: url
-    )
-  )
-```
-
-The adapter supports the OAS 3.1 base dialect and JSON Schema 2020-12. It does
-not support YAML, OpenAPI 3.0, external documents, custom dialects, or inline
-operation schemas. OpenAPI `discriminator` and legacy `nullable` are annotations,
-not validation or naming instructions. See the
-[OpenAPI example](../Examples/OpenAPIExample) for a complete emitter and consumer.
-
 ### Shared models and encoding
 
 Use `generateShared(document:schemaPointers:rootNames:)` when multiple entry

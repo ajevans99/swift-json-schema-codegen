@@ -53,8 +53,8 @@ The entry-point script compiles CLI output in a separate `GeneratedCLI` library,
 including tuple output, and imports target-local plugin output from a separate
 `PluginModels` library. It checks configured enum type names and `/enum/<index>`
 case names, mode-switch configuration invalidation and restoration, and the
-existing configuration-only plugin target. The OpenAPI options fixture verifies
-enum field overrides using original `#/components/schemas/...` selectors alongside
+existing configuration-only plugin target. The options fixture verifies
+enum field overrides using original `#/$defs/...` selectors alongside
 its object and union overrides.
 
 Generation is repeated with a relocated retrieval URI and the same logical

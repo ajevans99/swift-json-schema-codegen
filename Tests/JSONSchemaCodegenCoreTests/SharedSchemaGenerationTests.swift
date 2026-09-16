@@ -23,13 +23,13 @@ struct SharedSchemaGenerationTests {
     let result = try generate(
       ##"""
       {
-        "components":{"schemas":{
+        "$defs":{
           "Model":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]},
           "Twin":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}
-        }},
-        "retrieve":{"$ref":"#/components/schemas/Model"},
-        "list":{"type":"array","items":{"$ref":"#/components/schemas/Model"}},
-        "twin":{"$ref":"#/components/schemas/Twin"}
+        },
+        "retrieve":{"$ref":"#/$defs/Model"},
+        "list":{"type":"array","items":{"$ref":"#/$defs/Model"}},
+        "twin":{"$ref":"#/$defs/Twin"}
       }
       """##,
       pointers: ["/retrieve", "/list", "/twin"],
@@ -179,13 +179,13 @@ struct SharedSchemaGenerationTests {
   @Test func selectedAndLazilyIndexedReferencesHaveIdenticalCanonicalIdentity() throws {
     let source = ##"""
       {
-        "components":{"schemas":{"Item":{"type":"object","properties":{"id":{"type":"integer"}}}}},
-        "one":{"$ref":"#/components/schemas/Item"},
-        "two":{"$ref":"#/components/schemas/%49tem"}
+        "$defs":{"Item":{"type":"object","properties":{"id":{"type":"integer"}}}},
+        "one":{"$ref":"#/$defs/Item"},
+        "two":{"$ref":"#/$defs/%49tem"}
       }
       """##
     let selected = try generate(
-      source, pointers: ["/two", "/components/schemas/Item", "/one"],
+      source, pointers: ["/two", "/$defs/Item", "/one"],
       names: ["Second", "Direct", "First"])
     let lazy = try generate(source, pointers: ["/two", "/one"], names: ["Second", "First"])
     let selectedModels = selected.declarations.filter {
@@ -243,14 +243,14 @@ struct SharedSchemaGenerationTests {
   @Test func untypedReferencedObjectWrappersShareWithListItemsAndKeepOverrides() throws {
     let result = try generate(
       ##"""
-      {"components":{"schemas":{"Model":{
+      {"$defs":{"Model":{
         "properties":{"id":{"type":"string"}},"required":["id"]
-      }}},
-      "retrieve":{"$ref":"#/components/schemas/Model"},
-      "list":{"type":"array","items":{"$ref":"#/components/schemas/Model"}}}
+      }},
+      "retrieve":{"$ref":"#/$defs/Model"},
+      "list":{"type":"array","items":{"$ref":"#/$defs/Model"}}}
       """##,
       pointers: ["/retrieve", "/list"], names: ["Retrieve", "List"],
-      options: .init(names: .init(typeNames: ["#/components/schemas/Model": "SharedModel"])))
+      options: .init(names: .init(typeNames: ["#/$defs/Model": "SharedModel"])))
     let output = text(result)
     #expect(output.contains("typealias Retrieve = SharedModel"))
     #expect(output.contains("typealias List = [SharedModel]"))

@@ -274,7 +274,7 @@ func checkStringEnums() throws {
     ])
 
   try parity(
-    OpenAPIOptionsSchema.schema, OpenAPIOptionsSchemaTuples.schema,
+    OptionsSchema.schema, OptionsSchemaTuples.schema,
     valid: [#"{"payload":{"number":11},"result":12,"status":"in-progress"}"#],
     invalid: [
       #"{"payload":{"number":11},"result":12,"status":"missing"}"#,

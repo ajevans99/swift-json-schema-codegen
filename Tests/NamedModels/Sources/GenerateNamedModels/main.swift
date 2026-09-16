@@ -103,6 +103,20 @@ func generateModels() throws {
           "#/properties/exclusive/oneOf/1": "right",
         ])),
     .init(file: "enum-legacy", namespace: "LegacyEnumSchema"),
+    .init(
+      file: "options", namespace: "OptionsSchema",
+      names: .init(
+        typeNames: [
+          "#/$defs/Envelope/properties/payload": "Message",
+          "#/$defs/Envelope/properties/result": "Outcome",
+          "#/$defs/Envelope/properties/status": "Lifecycle",
+        ],
+        caseNames: [
+          "#/$defs/Envelope/properties/result/oneOf/0": "text",
+          "#/$defs/Envelope/properties/result/oneOf/1": "count",
+          "#/$defs/Envelope/properties/status/enum/1": "working",
+        ])),
+    .init(file: "theme", namespace: "ThemeSchema"),
   ]
   try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
@@ -184,43 +198,6 @@ func generateModels() throws {
       generationFailures.append("\(fixture.file): \(error)")
     }
   }
-  do {
-    let source = try String(
-      contentsOf: fixtures.appendingPathComponent("options.openapi.json"), encoding: .utf8)
-    let document = SchemaDocument(
-      source: source, retrievalURI: URL(string: "https://example.com/options.openapi.json")!,
-      logicalName: "options.openapi.json")
-    let names = SchemaNameOverrides(
-      typeNames: [
-        "#/components/schemas/Envelope/properties/payload": "Message",
-        "#/components/schemas/Envelope/properties/result": "Outcome",
-        "#/components/schemas/Envelope/properties/status": "Lifecycle",
-      ],
-      caseNames: [
-        "#/components/schemas/Envelope/properties/result/oneOf/0": "text",
-        "#/components/schemas/Envelope/properties/result/oneOf/1": "count",
-        "#/components/schemas/Envelope/properties/status/enum/1": "working",
-      ])
-    for (index, options) in [
-      SchemaGenerationOptions(output: .models, names: names), .init(),
-    ].enumerated() {
-      let components = try OpenAPISchemaGenerator(options: options).generateComponents(in: document)
-      guard components.count == 1, let component = components.first else {
-        throw HarnessError(
-          description: "OpenAPI override fixture did not emit exactly one component.")
-      }
-      let namespace = "OpenAPIOptionsSchema" + (index == 0 ? "" : "Tuples")
-      let emitted = wrap(component.schema, namespace: namespace)
-      try emitted.write(
-        to: output.appendingPathComponent(namespace + ".swift"),
-        atomically: true, encoding: .utf8)
-      byteCounts[index] += emitted.utf8.count
-    }
-    parityChecks.append(
-      "OpenAPIOptionsSchema.schema.schemaValue == OpenAPIOptionsSchemaTuples.schema.schemaValue")
-  } catch {
-    generationFailures.append("OpenAPI options: \(error)")
-  }
   guard generationFailures.isEmpty else {
     throw HarnessError(description: generationFailures.joined(separator: "\n"))
   }
@@ -265,7 +242,7 @@ func generateModels() throws {
     to: output.appendingPathComponent("ValidationParity.swift"),
     atomically: true, encoding: .utf8)
   print(
-    "Generated \(cases.count + 1) named/tuple consumer pairs: "
+    "Generated \(cases.count) named/tuple consumer pairs: "
       + "\(byteCounts[0]) named bytes, \(byteCounts[1]) tuple bytes. "
       + "Relocation and explicit value-layout policy checks passed.")
 }

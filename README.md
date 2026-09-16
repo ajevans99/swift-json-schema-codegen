@@ -173,11 +173,9 @@ Swift field or type.
 | [Output types and schema support](Documentation/SchemaSupport.md) | Type mapping, string enums, recursion, supported keywords, and limits |
 | [Generation](Documentation/Generation.md) | CLI options, plugin configuration, naming, references, and core APIs |
 | [Shared schemas and encoding](Documentation/SharedSchemas.md) | Multiple roots sharing model types, and mapping models back to `JSONValue` |
-| [OpenAPI example](Examples/OpenAPIExample) | Generating types from OpenAPI 3.1 JSON `components.schemas` |
 | [Official meta-schema example](Examples/MetaSchemaExample) | Offline generation from the official 2020-12 meta-schemas |
 
-The OpenAPI adapter handles schema components, not operations or transport. For
-operation clients, see
+For OpenAPI generation, use
 [Swift OpenAPI Schema Codegen](https://github.com/ajevans99/swift-openapi-schema-codegen).
 
 ## Development

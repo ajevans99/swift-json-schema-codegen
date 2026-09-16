@@ -229,18 +229,94 @@ try reject(
   DynamicTreeSchema.schema,
   #"{"value":"root","extra":true,"children":[{"value":"leaf","children":[]}]}"#)
 
-let openAPI = try OpenAPIOptionsSchema.schema.parseAndValidate(
+let options = try OptionsSchema.schema.parseAndValidate(
   instance: #"{"payload":{"number":11},"result":12,"status":"in-progress"}"#)
-let message: OpenAPIOptionsSchema.Message = openAPI.payload
-guard case .count(12) = openAPI.result else {
+let message: OptionsSchema.Message = options.payload
+guard case .count(12) = options.result else {
   throw ConsumerFailure(
-    description: "OpenAPI case overrides did not preserve original component selectors.")
+    description: "Case overrides did not preserve original definition selectors.")
 }
-requireSendable(OpenAPIOptionsSchema.Outcome.text("value"))
-let lifecycle: OpenAPIOptionsSchema.Lifecycle = openAPI.status
+requireSendable(OptionsSchema.Outcome.text("value"))
+let lifecycle: OptionsSchema.Lifecycle = options.status
 try check(
-  lifecycle == .working, "OpenAPI enum index override lost the original component selector.")
-try check(message.number == 11, "OpenAPI type override did not reach the nested model.")
+  lifecycle == .working, "Enum index override lost the original definition selector.")
+try check(message.number == 11, "Type override did not reach the nested model.")
+
+let themeSource = """
+  {
+    "id":"theme_midnight","name":"Midnight",
+    "palette":{"background":"#101828","foreground":"#f9fafb","accent":"#7f56d9"},
+    "body":{"family":"serif","size":16,"lineHeight":1.5}
+  }
+  """
+let readyThemeSource = #"{"status":"ready","theme":\#(themeSource)}"#
+// Both parsers can extract their fields; const validation must select pending.
+let pendingThemeSource = """
+  {"status":"pending","theme":\(themeSource),"jobId":"job_42","retryAfter":5}
+  """
+let feedSource = "[\(readyThemeSource),\(pendingThemeSource)]"
+let feed: ThemeSchema.Value = try ThemeSchema.schema.parseAndValidate(instance: feedSource)
+let tupleFeed = try ThemeSchemaTuples.schema.parseAndValidate(instance: feedSource)
+try check(feed.count == 2 && tupleFeed.count == 2, "Theme feed count changed.")
+guard case .ready(let readyTheme) = feed[0],
+  case .pending(let pendingTheme) = feed[1],
+  case .option1(let tupleReadyTheme) = tupleFeed[0],
+  case .option2(let tuplePendingTheme) = tupleFeed[1]
+else {
+  throw ConsumerFailure(description: "Const tags did not select the correct array union payloads.")
+}
+try check(
+  readyTheme.status == "ready" && readyTheme.theme.id == "theme_midnight"
+    && readyTheme.theme.name == "Midnight"
+    && readyTheme.theme.palette.accent == "#7f56d9"
+    && readyTheme.theme.body.family == "serif" && readyTheme.theme.body.size == 16
+    && readyTheme.theme.body.lineHeight == 1.5 && readyTheme.theme.caption == nil,
+  "Named allOf fields, shared references, or optional fields changed.")
+try check(
+  tupleReadyTheme.status == "ready" && tupleReadyTheme.theme.id == "theme_midnight"
+    && tupleReadyTheme.theme.name == "Midnight"
+    && tupleReadyTheme.theme.palette.accent == "#7f56d9"
+    && tupleReadyTheme.theme.body.family == "serif" && tupleReadyTheme.theme.body.size == 16
+    && tupleReadyTheme.theme.body.lineHeight == 1.5 && tupleReadyTheme.theme.caption == nil,
+  "Tuple allOf fields, shared references, or optional fields changed.")
+try check(
+  pendingTheme.jobId == "job_42" && pendingTheme.retryAfter == 5
+    && tuplePendingTheme.jobId == "job_42" && tuplePendingTheme.retryAfter == 5,
+  "Pending array union payload changed.")
+requireSendable(feed)
+
+func checkThemeValidation<Output>(_ schema: some JSONSchemaComponent<Output>) throws {
+  _ = try schema.parseAndValidate(
+    instance: feedSource.replacingOccurrences(of: "serif", with: "Inter"))
+  guard
+    let theme = try JSONSerialization.jsonObject(with: Data(themeSource.utf8))
+      as? [String: Any]
+  else {
+    throw ConsumerFailure(description: "Theme fixture must be an object.")
+  }
+  for field in ["id", "name", "palette", "body"] {
+    var missing = theme
+    missing.removeValue(forKey: field)
+    let source = String(
+      decoding: try JSONSerialization.data(withJSONObject: missing, options: [.sortedKeys]),
+      as: UTF8.self)
+    try reject(schema, #"[{"status":"ready","theme":\#(source)}]"#)
+  }
+  for (valid, invalid) in [
+    (#""theme_midnight""#, #""invalid""#),
+    (#""Midnight""#, #""""#),
+    (#""size":16"#, #""size":9"#),
+    (##""#7f56d9""##, #""purple""#),
+    (#""serif""#, #""Comic Sans""#),
+  ] {
+    try reject(schema, "[\(readyThemeSource.replacingOccurrences(of: valid, with: invalid))]")
+  }
+  try reject(schema, "[\(pendingThemeSource.replacingOccurrences(of: "pending", with: "unknown"))]")
+  try reject(schema, #"[{"status":"pending","jobId":"job_42","retryAfter":0}]"#)
+  try reject(schema, #"[{"status":"ready"}]"#)
+}
+try checkThemeValidation(ThemeSchema.schema)
+try checkThemeValidation(ThemeSchemaTuples.schema)
 
 try checkStringEnums()
 

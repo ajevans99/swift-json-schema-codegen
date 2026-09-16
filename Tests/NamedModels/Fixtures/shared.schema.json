@@ -1,39 +1,37 @@
 {
-  "components": {
-    "schemas": {
-      "Model": {
-        "type": "object",
-        "properties": {
-          "id": {"type": "integer"},
-          "wire-name": {"type": "string"},
-          "nickname": {"type": ["string", "null"]},
-          "contact": {"type": ["string", "null"]},
-          "status": {"type": "string", "enum": ["draft", "é", "e\u0301"]},
-          "payload": true,
-          "additionalProperties": {"type": "boolean"}
-        },
-        "required": ["id", "wire-name", "nickname"],
-        "additionalProperties": {"type": "integer"}
+  "$defs": {
+    "Model": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "integer"},
+        "wire-name": {"type": "string"},
+        "nickname": {"type": ["string", "null"]},
+        "contact": {"type": ["string", "null"]},
+        "status": {"type": "string", "enum": ["draft", "é", "e\u0301"]},
+        "payload": true,
+        "additionalProperties": {"type": "boolean"}
       },
-      "Tree": {
-        "type": "object",
-        "properties": {
-          "name": {"type": "string"},
-          "children": {"type": "array", "items": {"$ref": "#/components/schemas/Tree"}}
-        },
-        "required": ["name", "children"]
+      "required": ["id", "wire-name", "nickname"],
+      "additionalProperties": {"type": "integer"}
+    },
+    "Tree": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/Tree"}}
       },
-      "Expression": {
-        "type": ["object", "boolean"],
-        "properties": {"not": {"$ref": "#/components/schemas/Expression"}},
-        "additionalProperties": false
-      }
+      "required": ["name", "children"]
+    },
+    "Expression": {
+      "type": ["object", "boolean"],
+      "properties": {"not": {"$ref": "#/$defs/Expression"}},
+      "additionalProperties": false
     }
   },
-  "retrieve": {"$ref": "#/components/schemas/Model"},
-  "create": {"$ref": "#/components/schemas/Model"},
-  "list": {"type": "array", "items": {"$ref": "#/components/schemas/Model"}},
-  "refined": {"$ref": "#/components/schemas/Model", "required": ["contact"]},
+  "retrieve": {"$ref": "#/$defs/Model"},
+  "create": {"$ref": "#/$defs/Model"},
+  "list": {"type": "array", "items": {"$ref": "#/$defs/Model"}},
+  "refined": {"$ref": "#/$defs/Model", "required": ["contact"]},
   "only": {"type": "object", "required": ["token"], "additionalProperties": {"type": "integer"}},
   "response": {
     "oneOf": [
@@ -45,10 +43,10 @@
   "number": {"type": "number"},
   "prefix": {"type": "array", "prefixItems": [{"type": "integer"}]},
   "nullable": {"type": ["object", "null"], "properties": {"name": {"type": "string"}}},
-  "dictionary": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Model"}},
-  "tree": {"$ref": "#/components/schemas/Tree"},
-  "trees": {"type": "array", "items": {"$ref": "#/components/schemas/Tree"}},
-  "expression": {"$ref": "#/components/schemas/Expression"},
+  "dictionary": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Model"}},
+  "tree": {"$ref": "#/$defs/Tree"},
+  "trees": {"type": "array", "items": {"$ref": "#/$defs/Tree"}},
+  "expression": {"$ref": "#/$defs/Expression"},
   "nulls": {"type": "array", "items": {"type": "null"}},
   "nullDictionary": {"type": "object", "additionalProperties": {"type": "null"}},
   "nullFields": {
