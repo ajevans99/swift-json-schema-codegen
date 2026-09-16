@@ -25,7 +25,7 @@ Add the package dependency to `Package.swift`:
 dependencies: [
   .package(
     url: "https://github.com/ajevans99/swift-json-schema-codegen.git",
-    from: "0.2.0"
+    from: "0.3.0"
   )
 ]
 ```
