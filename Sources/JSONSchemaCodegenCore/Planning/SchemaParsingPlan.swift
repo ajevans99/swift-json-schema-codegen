@@ -93,6 +93,13 @@ enum SchemaParsingPlan {
     let properties: [Property]
     let additional: ResolvedSchema?
     let preservesCoverage: Bool
+    let capturesUnmodeledProperties: Bool
+
+    static func hasClosedPropertySet(_ node: ResolvedSchema) -> Bool {
+      node.hasClosedObjectProjection
+        || (node.value.object?["additionalProperties"] == .boolean(false)
+          && node.value.object?["patternProperties"]?.object?.isEmpty != false)
+    }
 
     init(_ node: ResolvedSchema) {
       let object = node.value.object ?? [:]
@@ -112,6 +119,9 @@ enum SchemaParsingPlan {
         object["additionalProperties"]?.object == nil
         ? nil : node.children["additionalProperties"]
       preservesCoverage = keys.count != declared.count || object["patternProperties"] != nil
+      capturesUnmodeledProperties =
+        !Self.hasClosedPropertySet(node)
+        && (!properties.isEmpty || additional == nil || preservesCoverage)
     }
   }
 

@@ -48,12 +48,18 @@ func generateSharedModels(output: URL) throws {
     schemaPointers: ["/base", "/strict"], rootNames: ["BaseTree", "StrictTree"])
   try writeShared(trees, namespace: "SharedDynamicSchemas", output: output)
   try generateUntypedObjects(output: output)
+  try generateUnknownPropertyModels(output: output)
+  try generateParserFactoryModels(output: output)
+  try generateUnionReferenceModels(output: output)
 }
 
 private func generateUntypedObjects(output: URL) throws {
-  let model = #"""
+  let model = ##"""
     {
       "description":"Object properties do not restrict the JSON kind.",
+      "x-padding":"\##(String(repeating: "x", count: 5_000))",
+      "x-literals":[1e400,1e-400,0.123456789012345678901,1.00,-0,true,null,
+        "é","e\u0301","quote\"\u0301 slash\\\u0301 \r\n\t\u0000","\\(notInterpolation)\"###"],
       "properties":{
         "id":{"type":"string","minLength":1},
         "created":{"type":"integer"},
@@ -61,20 +67,21 @@ private func generateUntypedObjects(output: URL) throws {
       },
       "required":["id","created"]
     }
-    """#
+    """##
   let source = """
     {
-      "components":{"schemas":{"Model":\(model)}},
+      "components":{"schemas":{"Model":\(model),"Mirror/~":{"$ref":"#/components/schemas/Model"}}},
       "retrieve":{"$ref":"#/components/schemas/Model"},
       "list":{"type":"array","items":{"$ref":"#/components/schemas/Model"}},
-      "strict":{"$ref":"#/components/schemas/Model","unevaluatedProperties":false}
+      "strict":{"$ref":"#/components/schemas/Model","unevaluatedProperties":false},
+      "escaped":{"$ref":"#/components/schemas/Mirror~1~0"}
     }
     """
   let generated = try SchemaGenerator().generateShared(
     document: .init(
       source: source, retrievalURI: URL(string: "https://example.com/untyped.json")!),
-    schemaPointers: ["/retrieve", "/list", "/strict"],
-    rootNames: ["Retrieve", "List", "Strict"])
+    schemaPointers: ["/retrieve", "/list", "/strict", "/escaped"],
+    rootNames: ["Retrieve", "List", "Strict", "Escaped"])
   try writeShared(generated, namespace: "SharedUntypedSchemas", output: output)
   let strict = """
     {"$defs":{"Model":\(model)},"$ref":"#/$defs/Model","unevaluatedProperties":false}
@@ -98,7 +105,7 @@ private func generateUntypedObjects(output: URL) throws {
   }
 }
 
-private func writeShared(
+func writeShared(
   _ generated: GeneratedSharedSchemas, namespace: String, output: URL
 ) throws {
   let roots = generated.roots.map { root in

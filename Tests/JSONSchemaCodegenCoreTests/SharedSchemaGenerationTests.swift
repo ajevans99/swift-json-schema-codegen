@@ -258,4 +258,54 @@ struct SharedSchemaGenerationTests {
     expectNoDifference(output.components(separatedBy: "enum SharedModel:").count, 2)
     expectNoDifference(output.components(separatedBy: "struct ModelObject:").count, 2)
   }
+
+  @Test func largeSharedValidationUsesLosslessConstantsWithoutChangingDefaultEmission() throws {
+    let source = """
+      {"type":"object","properties":{"id":{"type":"integer"}},"required":["id"],
+       "unevaluatedProperties":false,"x-padding":"\(String(repeating: "x", count: 5_000))"}
+      """
+    let shared = try generate(source, pointers: [""], names: ["Root"])
+    let output = text(shared)
+    #expect(output.contains("private static let _JSONSchemaCodegenDefinition1: SchemaValue"))
+    #expect(output.contains("JSONValue.parse("))
+    #expect(output.contains("preconditionFailure"))
+    #expect(shared.roots[0].expression.contains("_JSONSchemaCodegenDefinition1"))
+    #expect(output.contains("let id: Int"))
+    #expect(output.contains("func encodeRoot"))
+    expectNoDifference(shared, try generate(source, pointers: [""], names: ["Root"]))
+    let legacy = try SchemaGenerator().generate(source)
+    #expect(!legacy.declarations.contains { $0.contains("JSONValue.parse(") })
+    #expect(legacy.expression.contains(".object(["))
+    let small = try generate(
+      #"{"type":"object","unevaluatedProperties":false}"#, pointers: [""], names: ["Small"])
+    #expect(!text(small).contains("JSONValue.parse("))
+  }
+
+  @Test func wideSharedGraphRetainsDistinctReferenceIdentitiesAcrossRewrittenFields() throws {
+    let definition = #"""
+      {"type":"object","properties":{"kind":{"type":"string","enum":["first","second"]}},
+       "required":["kind"],"additionalProperties":false}
+      """#
+    let fields = (0..<8).map { index in
+      """
+      "left\(index)":{"$ref":"#/$defs/Left"},"right\(index)":{"$ref":"#/$defs/Right"}
+      """
+    }.joined(separator: ",")
+    let roots = (0..<16).map { index in
+      "\"root\(index)\":{\"type\":\"object\",\"properties\":{\(fields)}}"
+    }.joined(separator: ",")
+    let source = "{\"$defs\":{\"Left\":\(definition),\"Right\":\(definition)},\(roots)}"
+    let names = (0..<16).map { "Root\($0)" }
+    let pointers = (0..<16).map { "/root\($0)" }
+    let result = try generate(source, pointers: pointers, names: names)
+    let output = text(result)
+    expectNoDifference(result.roots.map(\.outputType), names)
+    expectNoDifference(output.components(separatedBy: "struct Left:").count, 2)
+    expectNoDifference(output.components(separatedBy: "struct Right:").count, 2)
+    for index in 0..<8 {
+      expectNoDifference(output.components(separatedBy: "let left\(index): Left?").count, 17)
+      expectNoDifference(output.components(separatedBy: "let right\(index): Right?").count, 17)
+    }
+    expectNoDifference(result, try generate(source, pointers: pointers, names: names))
+  }
 }

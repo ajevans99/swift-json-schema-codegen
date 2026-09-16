@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "Level0": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "choice": {"anyOf": [{"type": "string"}, {"type": "number"}]},
+        "tag": {"type": ["string", "null"]}
+      },
+      "required": ["id", "choice"]
+    },
+    "Level1": {
+      "type": "object",
+      "properties": {
+        "field0": {"$ref": "#/$defs/Level0"},
+        "field1": {"$ref": "#/$defs/Level0"},
+        "field2": {"$ref": "#/$defs/Level0"},
+        "field3": {"$ref": "#/$defs/Level0"}
+      }
+    },
+    "Level2": {
+      "type": "object",
+      "properties": {
+        "field0": {"$ref": "#/$defs/Level1"},
+        "field1": {"$ref": "#/$defs/Level1"},
+        "field2": {"$ref": "#/$defs/Level1"},
+        "field3": {"$ref": "#/$defs/Level1"}
+      }
+    },
+    "Level3": {
+      "type": "object",
+      "properties": {
+        "field0": {"$ref": "#/$defs/Level2"},
+        "field1": {"$ref": "#/$defs/Level2"},
+        "field2": {"$ref": "#/$defs/Level2"},
+        "field3": {"$ref": "#/$defs/Level2"}
+      }
+    }
+  },
+  "$ref": "#/$defs/Level3"
+}

@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "Direct": {
+      "type": "object",
+      "properties": {"type": {"type": "string", "enum": ["direct"]}},
+      "required": ["type"]
+    },
+    "Program": {
+      "type": "object",
+      "properties": {
+        "type": {"type": "string", "enum": ["program"]},
+        "name": {"type": "string"}
+      },
+      "required": ["type", "name"]
+    },
+    "Caller": {
+      "oneOf": [{"$ref": "#/$defs/Direct"}, {"$ref": "#/$defs/Program"}],
+      "description": "The original caller description.",
+      "default": {"type": "direct"},
+      "discriminator": {"propertyName": "type"}
+    },
+    "Specialized": {
+      "$ref": "#/$defs/Caller",
+      "type": "object",
+      "properties": {"extra": {"type": "integer", "minimum": 1}},
+      "required": ["extra"]
+    },
+    "Ambiguous": {
+      "oneOf": [{"$ref": "#/$defs/Direct"}, {"$ref": "#/$defs/Direct"}],
+      "description": "Both branches match.",
+      "discriminator": {"propertyName": "type"}
+    }
+  },
+  "type": "object",
+  "properties": {
+    "first": {
+      "$ref": "#/$defs/Caller",
+      "description": "First use site.",
+      "default": {"type": "program", "name": "example"}
+    },
+    "second": {"$ref": "#/$defs/Caller", "description": "Second use site."},
+    "plain": {"$ref": "#/$defs/Caller"},
+    "nullableFirst": {
+      "anyOf": [
+        {"$ref": "#/$defs/Caller", "description": "Nullable first use site."},
+        {"type": "null"}
+      ]
+    },
+    "nullableSecond": {
+      "anyOf": [
+        {"$ref": "#/$defs/Caller", "description": "Nullable second use site."},
+        {"type": "null"}
+      ]
+    },
+    "specializedFirst": {"$ref": "#/$defs/Specialized", "description": "Specialized first."},
+    "specializedSecond": {"$ref": "#/$defs/Specialized", "description": "Specialized second."},
+    "strict": {"$ref": "#/$defs/Caller", "description": "Closed use site.", "unevaluatedProperties": false},
+    "ambiguous": {"$ref": "#/$defs/Ambiguous", "description": "Ambiguous use site."}
+  }
+}

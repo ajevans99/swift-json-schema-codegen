@@ -20,6 +20,7 @@ struct SchemaModelGraph {
     let name: String
     let type: SchemaOutput
     let absent: Bool
+    var unmodeled = false
   }
 
   struct Branch {

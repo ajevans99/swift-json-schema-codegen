@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "Leaf": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "unmodeledProperties": {"type": "string"}
+      },
+      "required": ["id"],
+      "patternProperties": {"^meta_": {"type": ["number", "null"]}}
+    }
+  },
+  "nested": {
+    "type": "object",
+    "properties": {
+      "id": {"type": "string"},
+      "leaf": {"$ref": "#/$defs/Leaf"},
+      "leaves": {"type": "array", "items": {"$ref": "#/$defs/Leaf"}}
+    },
+    "required": ["id", "leaf", "leaves"]
+  },
+  "booleanExtras": {
+    "type": "object",
+    "properties": {"id": {"type": "string"}},
+    "required": ["id"],
+    "additionalProperties": true
+  },
+  "patternTyped": {
+    "type": "object",
+    "properties": {"id": {"type": "string"}},
+    "required": ["id", "ghost"],
+    "patternProperties": {"^pattern_": {"type": ["number", "null"]}},
+    "additionalProperties": {"type": "integer"}
+  },
+  "typedOnly": {
+    "type": "object",
+    "patternProperties": {"^raw_": true},
+    "additionalProperties": {"type": "integer"}
+  },
+  "composed": {
+    "allOf": [
+      {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]},
+      {"type": "object", "properties": {"b": {"type": "integer"}}, "required": ["b"]}
+    ],
+    "unevaluatedProperties": {"type": ["string", "null"]}
+  },
+  "strict": {
+    "$ref": "#/$defs/Leaf",
+    "unevaluatedProperties": false
+  },
+  "forbidden": {
+    "type": "object",
+    "description": "Closed original schema.",
+    "properties": {"id": {"type": "string"}},
+    "required": ["id"],
+    "additionalProperties": false
+  },
+  "closedReference": {
+    "$ref": "#/forbidden",
+    "description": "Closed reference annotation."
+  },
+  "closedComposed": {
+    "allOf": [
+      {"$ref": "#/forbidden"},
+      {"properties": {"id": {"minLength": 2}}}
+    ]
+  },
+  "emptyClosed": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "patternClosed": {
+    "type": "object",
+    "description": "Closed outside declared and pattern-matched keys.",
+    "properties": {"id": {"type": "string"}},
+    "required": ["id", "raw_required"],
+    "patternProperties": {"^raw_": true},
+    "additionalProperties": false
+  },
+  "patternClosedReference": {
+    "$ref": "#/patternClosed",
+    "description": "Pattern reference annotation."
+  },
+  "patternClosedComposed": {
+    "allOf": [
+      {"$ref": "#/patternClosed"},
+      {"minProperties": 2}
+    ],
+    "unevaluatedProperties": false
+  },
+  "patternOnlyClosed": {
+    "type": "object",
+    "patternProperties": {"^raw_": true},
+    "additionalProperties": false
+  },
+  "patternRestricted": {
+    "allOf": [
+      {"$ref": "#/patternClosed"},
+      {
+        "properties": {"id": true, "raw_required": true},
+        "additionalProperties": false
+      }
+    ]
+  },
+  "union": {
+    "anyOf": [{"$ref": "#/$defs/Leaf"}, {"type": "string"}]
+  }
+}
