@@ -193,6 +193,18 @@ macOS and Linux. For a local end-to-end check of the CLI and plugin:
 bash Tests/CLI/smoke.sh
 ```
 
+On macOS with Xcode installed, also run the Xcode build-system regression check:
+
+```sh
+bash Tests/CLI/xcode-smoke.sh
+```
+
+It builds and runs the plugin example with fresh DerivedData, retaining logs under
+`.build/xcode-smoke.*`. To build it interactively, open
+`Examples/PluginExample/PluginExample.xcworkspace` and select the `PluginExample`
+scheme. The CLI product, executable target, and plugin tool lookup all use
+`json-schema-codegen` so Xcode locates the generated tool executable correctly.
+
 The [conformance harness](Tests/Conformance) checks generated code against the
 official JSON Schema Test Suite. Its README covers fixture setup, measured
 coverage, and known failures.
