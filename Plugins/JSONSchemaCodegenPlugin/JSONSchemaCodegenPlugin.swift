@@ -20,7 +20,7 @@ struct JSONSchemaCodegenPlugin: BuildToolPlugin {
       return [
         .buildCommand(
           displayName: "Validate JSON schema configuration for \(target.name)",
-          executable: try context.tool(named: "JSONSchemaCodegenCLI").url,
+          executable: try context.tool(named: "json-schema-codegen").url,
           arguments: ["_validate-config", configurationFile.path, "--stamp", stamp.path],
           inputFiles: [configurationFile],
           outputFiles: [stamp]
@@ -59,7 +59,7 @@ struct JSONSchemaCodegenPlugin: BuildToolPlugin {
     return [
       .buildCommand(
         displayName: "Generate JSON schemas for \(target.name)",
-        executable: try context.tool(named: "JSONSchemaCodegenCLI").url,
+        executable: try context.tool(named: "json-schema-codegen").url,
         arguments: arguments,
         inputFiles: inputFiles,
         outputFiles: outputs

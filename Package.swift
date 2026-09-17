@@ -16,7 +16,7 @@ let package = Package(
   products: [
     .library(name: "JSONSchemaCodegen", targets: ["JSONSchemaCodegen"]),
     .library(name: "JSONSchemaCodegenCore", targets: ["JSONSchemaCodegenCore"]),
-    .executable(name: "json-schema-codegen", targets: ["JSONSchemaCodegenCLI"]),
+    .executable(name: "json-schema-codegen", targets: ["json-schema-codegen"]),
     .plugin(name: "JSONSchemaCodegenPlugin", targets: ["JSONSchemaCodegenPlugin"]),
   ],
   dependencies: [
@@ -59,16 +59,18 @@ let package = Package(
       ]
     ),
     .executableTarget(
-      name: "JSONSchemaCodegenCLI",
+      // Xcode resolves plugin tools by target name, so it must match the executable product.
+      name: "json-schema-codegen",
       dependencies: [
         "JSONSchemaCodegenCore",
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
-      ]
+      ],
+      path: "Sources/JSONSchemaCodegenCLI"
     ),
     .plugin(
       name: "JSONSchemaCodegenPlugin",
       capability: .buildTool(),
-      dependencies: ["JSONSchemaCodegenCLI"]
+      dependencies: ["json-schema-codegen"]
     ),
     .testTarget(
       name: "JSONSchemaCodegenCoreTests",

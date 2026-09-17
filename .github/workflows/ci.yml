@@ -25,6 +25,9 @@ jobs:
         run: swift test
       - name: CLI and plugin consumer
         run: bash Tests/CLI/smoke.sh
+      - name: Xcode plugin consumer
+        if: runner.os == 'macOS'
+        run: bash Tests/CLI/xcode-smoke.sh
       - name: Named-model generated consumers
         run: bash Tests/NamedModels/smoke.sh
       - name: Named-model entry points
