@@ -1,0 +1,83 @@
+{
+  "$ref": "#/$defs/ThemeFeed",
+  "$defs": {
+    "Typography": {
+      "type": "object",
+      "properties": {
+        "family": {"$ref": "#/$defs/FontFamily"},
+        "size": {"type": "integer", "minimum": 10, "maximum": 72},
+        "lineHeight": {"type": "number", "minimum": 1, "maximum": 2.5}
+      },
+      "required": ["family", "size"]
+    },
+    "FontFamily": {
+      "anyOf": [
+        {"type": "string", "pattern": "^(Inter|Roboto|Source Sans)$"},
+        {"type": "string", "pattern": "^(serif|sans-serif|monospace)$"}
+      ]
+    },
+    "Color": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$"
+    },
+    "Palette": {
+      "type": "object",
+      "properties": {
+        "background": {"$ref": "#/$defs/Color"},
+        "foreground": {"$ref": "#/$defs/Color"},
+        "accent": {"$ref": "#/$defs/Color"}
+      },
+      "required": ["background", "foreground", "accent"]
+    },
+    "ThemeBase": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "pattern": "^theme_[a-z]+$"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 80}
+      },
+      "required": ["id", "name"]
+    },
+    "Theme": {
+      "allOf": [
+        {"$ref": "#/$defs/ThemeBase"},
+        {
+          "type": "object",
+          "properties": {
+            "palette": {"$ref": "#/$defs/Palette"},
+            "body": {"$ref": "#/$defs/Typography"},
+            "caption": {"type": "string", "maxLength": 140}
+          },
+          "required": ["palette", "body"]
+        }
+      ]
+    },
+    "ReadyTheme": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "string", "const": "ready"},
+        "theme": {"$ref": "#/$defs/Theme"}
+      },
+      "required": ["status", "theme"]
+    },
+    "PendingTheme": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "string", "const": "pending"},
+        "jobId": {"type": "string", "minLength": 1},
+        "retryAfter": {"type": "integer", "minimum": 1, "maximum": 60}
+      },
+      "required": ["status", "jobId", "retryAfter"]
+    },
+    "ThemeResponse": {
+      "oneOf": [
+        {"$ref": "#/$defs/ReadyTheme"},
+        {"$ref": "#/$defs/PendingTheme"}
+      ]
+    },
+    "ThemeFeed": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/ThemeResponse"},
+      "maxItems": 100
+    }
+  }
+}

@@ -103,11 +103,11 @@ struct SchemaModelGraph {
     let origin = provenance.origins[0]
     let tokens = tokens(origin.pointer)
     let structure = Set([
-      "properties", "$defs", "components", "schemas", "anyOf", "oneOf", "allOf",
+      "properties", "$defs", "anyOf", "oneOf", "allOf",
       "items", "additionalProperties",
     ])
     let context = tokens.filter { !structure.contains($0) && Int($0) == nil }
-    if tokens.count >= 2 && ["$defs", "schemas", "properties"].contains(tokens[tokens.count - 2]) {
+    if tokens.count >= 2 && ["$defs", "properties"].contains(tokens[tokens.count - 2]) {
       return (tokens.last!, Array(context.dropLast()) + [origin.logicalDocument])
     }
     if tokens.last == "items" {
@@ -255,7 +255,7 @@ struct SchemaModelGraph {
   ) -> String {
     let provenance = provenance(schema)
     let tokens = tokens(provenance.origins[0].pointer)
-    if tokens.count >= 2, ["$defs", "schemas"].contains(tokens[tokens.count - 2]) {
+    if tokens.count >= 2, tokens[tokens.count - 2] == "$defs" {
       return tokens.last!
     }
     switch output {

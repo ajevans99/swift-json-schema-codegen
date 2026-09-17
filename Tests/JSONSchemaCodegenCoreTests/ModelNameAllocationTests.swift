@@ -5,6 +5,19 @@ import Testing
 @testable import JSONSchemaCodegenCore
 
 struct ModelNameAllocationTests {
+  @Test func ordinaryPropertyNamesRemainInModelNamingContext() {
+    let provenance = SchemaModelProvenance(
+      identity: "item",
+      origins: [
+        .init(
+          pointer: "/properties/components/properties/schemas/properties/item",
+          documentURI: nil, logicalDocument: "model.schema.json", resource: "model.schema.json")
+      ])
+    let (name, context) = SchemaModelGraph.naming(provenance, object: true)
+    expectNoDifference(name, "item")
+    expectNoDifference(context, ["components", "schemas", "model.schema.json"])
+  }
+
   @Test(arguments: [
     ("User", "User", "user"),
     ("HTTPServer", "HTTPServer", "httpServer"),

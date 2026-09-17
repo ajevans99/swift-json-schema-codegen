@@ -51,7 +51,7 @@ paths follow the current Core directory layout.
 | `Sources/JSONSchemaCodegenCore/Syntax/RecursiveSchemaSyntax.swift` | Emits public `ReferenceN` wrappers and lazy factories | Keep the legacy path; add private adapters whose outputs map to public models |
 | `Sources/JSONSchemaCodegenCore/Naming/SchemaPropertyNames.swift` | Maps arbitrary JSON keys to collision-safe Swift labels | Preserve this field-label contract; add separate type/case naming rules |
 | `Sources/JSONSchemaCodegenMacros/SchemaMacro.swift` | Accepts exactly one literal and emits namespace members | Parse literal representation/naming options and pass namespace context |
-| CLI, plugin, and OpenAPI adapter | Select roots, generate namespaces, and manage files | Pass the same validated configuration to the core |
+| CLI and plugin | Select roots, generate namespaces, and manage files | Pass the same validated configuration to the core |
 
 Important current details that the refactor must preserve:
 
@@ -271,7 +271,7 @@ Do not increment a global counter while walking parser expressions.
 
 1. An explicit, validated user override.
 2. The fixed root role, normally `Value`.
-3. A referenced `$defs` name or OpenAPI component name.
+3. A referenced `$defs` name.
 4. A meaningful property/use-site name.
 5. A container role such as `ItemsItem`, `Entry`, or `ObjectValue`.
 6. A contextual name with a stable disambiguating suffix.
@@ -502,7 +502,7 @@ let generator = SchemaGenerator(
 
 Preserve `SchemaGenerator()` and all existing generation methods. Apply options
 consistently to inline source, batch generation, root-plus-registry generation,
-and the internal OpenAPI root-selection path.
+and the internal schema root-selection path.
 
 Keep `GeneratedSchema`'s existing expression/output/declarations properties.
 Its named-mode `outputType` references `Value`; supporting declarations remain
@@ -579,12 +579,6 @@ SwiftPM unhandled-file warnings while still allowing the plugin to read it.
 An absent config preserves current behavior. Malformed or unsupported-version
 configurations fail explicitly.
 
-### OpenAPI
-
-Add matching options to `OpenAPISchemaGenerator` and forward them into the same
-core path. Preserve component namespaces and source order. A referenced component
-name is a naming hint, not a request to generate cross-namespace shared storage.
-
 First-version reuse is within each generated namespace. Shared models across
 separately emitted roots are deferred because they change output ownership,
 visibility, and incremental-build behavior.
@@ -654,7 +648,7 @@ milestones, not authorization to create a PR stack.
 | 3. Names and reuse | Allocate type names, model identities, reference reuse, portable collision handling, and overrides | Naming stability/mutation tests and duplicate-definition fixtures pass |
 | 4. Semantic unions | Add named enums/cases, conservative discriminator evidence, common-output rules, and null cases | Existing `anyOf`/`oneOf` fixtures have equivalent outcomes and usable enum APIs |
 | 5. Recursive models | Analyze inline layout; add indirect semantic enums/private adapters; implement explicit class policy | Arrays/dictionaries, direct/mutual cycles, nullable lists, and dynamic trees behave as specified |
-| 6. Surface integration | Wire macro options, CLI config/flags, plugin invalidation, and OpenAPI options | Equivalent options produce equivalent declarations through every entry point |
+| 6. Surface integration | Wire macro options, CLI config/flags, and plugin invalidation | Equivalent options produce equivalent declarations through every entry point |
 | 7. Conformance and usability | Run both representations, convert real examples, inspect the full generated meta-schema, measure builds, and document migration | Acceptance criteria below are met and remaining limits are explicit |
 
 Do not document partially supported `.models` behavior as complete between
@@ -664,7 +658,7 @@ than quietly returning legacy tuple APIs.
 ### File organization
 
 Core's public entry points remain at `Sources/JSONSchemaCodegenCore/`:
-`SchemaGenerator.swift`, `SchemaDocument.swift`, `OpenAPISchemaGenerator.swift`,
+`SchemaGenerator.swift`, `SchemaDocument.swift`,
 and the `JSONSchemaCodegenCore.swift` configuration re-export.
 
 Internal files are grouped in the same target:
@@ -732,7 +726,7 @@ test framework or duplicating transitive test dependencies.
 
 ### End-to-end parity
 
-Extend the CLI/plugin/OpenAPI smoke scripts to exercise both output modes.
+Extend the CLI/plugin smoke scripts to exercise both output modes.
 Check plugin regeneration after config changes and unchanged-file timestamps
 when inputs/options are unchanged. Fail an invalid batch before writing files.
 
@@ -775,7 +769,7 @@ The enhancement is ready when:
 - Recursion works without public adapter wrappers, or produces the explicit
   selected representation-policy diagnostic.
 - Validation parity holds across generated consumers and official fixtures.
-- Macro, core, CLI, plugin, and OpenAPI paths are all wired.
+- Macro, core, CLI, and plugin paths are all wired.
 - Runtime version requirements and remaining limitations are accurate.
 
 ## 13. Non-goals and approval checkpoints
@@ -805,7 +799,7 @@ names are valuable, but they are not a substitute for those correctness checks.
 
 ## 14. Implementation record
 
-The core, macro, CLI, target-local plugin configuration, and OpenAPI adapter now
+The core, macro, CLI, and target-local plugin configuration now
 share the opt-in named-model options. Tuple mode remains the default. The
 design-token and official meta-schema examples explicitly select named mode.
 
@@ -835,7 +829,6 @@ that the minimum compiler or Linux matrix was executed locally.
 | Separate generated library and consumer | 24 named/tuple pairs passed public type/initializer, typed-access, `Sendable`, relocation, validation parity, and negative-compilation checks |
 | CLI and plugin | Existing CLI behavior plus named design-token consumer passed |
 | Named entry points | Configuration precedence, invalid configuration, plugin regeneration, batch order, recursion policy, and escaped selectors passed |
-| OpenAPI | Both representations passed the real composed Style API consumer; original component selectors also passed explicit-name coverage |
 | Official meta-schema | Named recursive access and initialization passed; 15 valid cases, 53 invalid cases, and all eight official documents checked |
 | Official 2020-12 suite | Both modes generated 382/384 groups; 1,296 unique instances, 2,592 mode-specific checks, zero schema-value or instance-result mismatches |
 | Formatting | Strict formatting and diff whitespace checks passed for the release update; the initial implementation also passed strict formatting on all 55 changed Swift files |
@@ -845,7 +838,7 @@ generation failures. The full conformance command therefore exits nonzero;
 those groups are not counted as supported or silently filtered.
 
 CI includes the named-consumer, entry-point, and meta-schema scripts alongside
-the existing package/CLI/OpenAPI checks. The dependency requirement has since
+the existing package/CLI checks. The dependency requirement has since
 advanced to the published runtime 0.14.0; editable checkout state is not part of
 the PR. No codegen release was created.
 
@@ -957,8 +950,8 @@ still generates 382/384 groups: 1,296 unique instances / 2,592 mode checks, with
 zero schema-value or runtime mismatches. The two custom-vocabulary dialect
 groups remain explicit unsupported-generation errors and the full command
 still exits nonzero. The 33 separate named/tuple public-consumer pairs, named
-CLI/plugin entry-point checks, existing CLI/plugin smoke suite, OpenAPI smoke
-suite, and official meta-schema smoke checks also pass. The design-token
+CLI/plugin entry-point checks, existing CLI/plugin smoke suite,
+and official meta-schema smoke checks also pass. The design-token
 example now uses typed mode cases and bridges namespace-local enum types through
 their exact raw-string initializer.
 This does not claim local execution on Linux or the minimum Swift 6.1 compiler;
